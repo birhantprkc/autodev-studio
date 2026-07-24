@@ -1,61 +1,71 @@
 # Does a one-time knowledge base make AI coding cheaper? AutoDev Studio vs plain Claude Code
 
-**TL;DR** — Four experiments, twelve tasks total, on four repos of increasing size:
+## Current pipeline vs plain Claude Code
 
-* **Experiment 1 (tinydb, ~2.2k LOC):** After a one-time **$0.198** KB build, the full 5-stage
-  pipeline cost about the same as one raw Claude Code run ($0.41 vs $0.37 across both tasks),
-  and the **coding step alone** was **≈19% cheaper** than Claude Code exploring cold. On a repo
-  this small the localization advantage is modest.
-* **Experiment 2 (pallets/click, ~12k core LOC — a larger repo, all-Claude pipeline):** As the repo
-  grows, plain Claude Code's cost rises sharply (from ~$0.19/task on tinydb to **$0.65–$1.07/task**
-  on click) because cold exploration scales with codebase size. The KB-grounded **coding step was
-  ≈18% cheaper in aggregate** (−39% on the harder bug-fix task, where the baseline burned 45 turns
-  / $1.07). But the **whole pipeline** ran **+16% over** the baseline — driven almost entirely by
-  the QA/Review **revision loop** (Task A's reviewer bounced the diff twice → three Dev rounds).
-  Putting QA/Review on **haiku** kept those gates to ~$0.06–$0.09 each even across multiple rounds.
-* **Experiment 3 (Textualize/rich, ~35.6k core LOC — largest repo):** going 3× bigger again
-  **overturned the "repo size" framing.** rich's greppable baselines came in *cheaper* than click's
-  despite 3× the code, because what actually drives cost is **task localizability**, not LOC — on
-  one repo, a cross-cutting bug cost the baseline 3.5× the tokens of a greppable one. The KB's
-  **localization step (PM) was the clear win** ($0.27 vs a 919k-token cold hunt), but the **Dev
-  step only stayed cheap on well-localized tasks** (−48% on the greppable feature, +21% on the
-  cross-cutting bug), and the five-stage **gate floor** (~$0.34) made the whole pipeline run **+6%
-  to +187%** over baseline — worst on the *cheapest* tasks. This run also surfaced (and fixed) a
-  real infra bug: a mis-provisioned test env manufactured phantom QA failures that burned two extra
-  Dev rounds per task until corrected. An **optimization round** (PM → haiku + scope-minimalism
-  prompts, default one ticket per scope) then re-ran all three tasks: the cross-cutting task went
-  from **+70% to +3.5%** (a statistical tie), the genuinely-revising task from **+187% to +43%**
-  (2 revision rounds collapsed to 1), and the greppable task from +6% to +26% (worse, on pure
-  Dev-step run-to-run variance). A **second round** then targeted the remaining Dev-step waste:
-  Dev was told exactly which files mattered but still re-read them via tool calls, so the pipeline
-  now inlines the pinned files' actual contents straight into the Dev prompt. Re-run on all three
-  tasks: A moved from **+26% to −26%**, B from **+43% to +31%**, C from **+3.5% to −45%** — two of
-  three tasks now beat plain Claude Code outright, and the third (B, the cheapest baseline at
-  $0.21) improved substantially even though it hasn't crossed over, because the pipeline's fixed
-  PM+QA+Review gate floor (~$0.14) has less room to amortize on a task that cheap.
-* **Experiment 4 (Textualize/textual, ~82.5k LOC — biggest repo yet, file-injection pipeline):**
-  the tuned pipeline held up on a large async framework and made **localization *quality* the whole
-  story.** On the two greppable tasks the PM localized to the *exact* file the baseline used, even
-  at 82k LOC; the feature (A) came in at **−36%** ($0.38 vs $0.59). The cross-cutting bug (C) is the
-  most extreme localization tax we measured — the baseline spent **$6.83 over 207 turns** (14.3M
-  tokens) hunting a cache-decorator bug in the render stack — and the pipeline delivered a tested fix
-  **−75% cheaper**… but the PM mislocated the *root cause*, so it fixed only the Markdown case, not
-  the general one the baseline cured. **Cheaper, but a partial fix.** And B (a perfectly-localized,
-  correct-on-first-pass bug) came in **+25% over** baseline purely because QA misread the repo's ~40
-  pre-existing snapshot failures as regressions and burned two needless revision rounds. So at this
-  scale the two things that decide the outcome are **whether the PM finds the true root cause** and
-  **whether QA can tell a pre-existing failure from a new one** — neither is about repo size.
+The numbers that matter are from the **current pipeline** — the tuned version with
+file-content injection into the Dev prompt and a QA pre-existing-failure baseline
+(see *How the pipeline got here* below for the earlier iterations that led to it).
+Measured on the **two largest repos** (Textualize/rich ~35.6k LOC and Textualize/textual
+~82.5k LOC), identical plain-English request given to both systems:
 
-**The through-line:** the KB reliably buys a cheap, accurate **localization** step, and that saving
-grows with how hard a task is to find — but it does **not** buy a cheaper Dev step on inherently
-cross-cutting changes, nor an escape from the fixed cost of running five gated stages, and a cheap
-"win" on a hard bug can hide a fix that only covers part of the root cause. Baseline cost tracks
-**localizability**, not repo size; pipeline cost tracks the **gate floor + how many Dev↔Review
-rounds** a task takes; and pipeline *correctness* on hard bugs tracks whether the PM localized the
-true root cause. Spend the one-time KB money when you will ask *many, hard-to-localize* questions of
-the *same* repo — but read the diff on the hard ones, and give QA a pre-change test baseline before
-trusting it on a repo that ships with failing tests. For a stream of cheap greppable edits, a cold
-`claude -p` is hard to beat on price alone.
+| Repo | Task | Kind | **Pipeline** | Baseline (cold Claude Code) | **Δ** |
+|---|---|---|---:|---:|---:|
+| rich | A | feature | **$0.333** | $0.449 | **−26%** |
+| rich | C | cross-cutting bug | **$0.456** | $0.828 | **−45%** |
+| textual | A | feature | **$0.380** | $0.590 | **−36%** |
+| textual | C | extreme cross-cutting bug | **$1.705** | $6.830 | **−75%** \* |
+| textual | D | medium bug | **$1.697** | $2.146 | **−21%** |
+| textual | E | greppable bug | **$0.374** | $0.401 | **−7%** |
+
+**On these two repos the tuned pipeline beats a cold `claude -p` on 6 of 6 tasks it
+localizes well — by 7% to 75%** — *and* it ships each change with a locked scope,
+independent QA, a cross-provider review, and a PR branch that the raw baseline never
+produces. The saving grows with how hard a task is to find: on textual-C the baseline
+burned **$6.83 over 207 turns** (14.3M tokens) hunting one cache-decorator bug; the
+pipeline localized and fixed it for a quarter of that.
+
+> \* **textual-C honesty note (this is the one caveat worth reading):** the −75% is a
+> real *cost* win, but the PM localized to the wrong layer, so the fix covers only the
+> Markdown case, not the general one the baseline cured. Dramatically cheaper, but a
+> *narrower* fix — treat a hard cross-cutting bug's cheap pipeline output as a tested
+> draft pending human root-cause review, not a finished delivery.
+
+### Where it doesn't win (and why)
+
+Two honest holdouts — both understood, neither about repo size:
+
+* **rich-B (+31%, $0.278 vs $0.212).** The baseline here is *tiny*. The pipeline's
+  fixed PM+QA+Review gate floor (~$0.14) structurally can't shrink below what those
+  gates cost, so on a task whose whole baseline is $0.21 the floor alone eats the
+  margin. For a stream of *very* cheap, single-file edits, a cold `claude -p` is hard
+  to beat on price — that's the pipeline's break-even boundary, not a defect.
+* The **QA "pre-existing failures" false-FAIL** that cost an earlier run two wasted
+  revision rounds has since been **fixed** (`git_ops.failing_tests` now snapshots the
+  failing set before Dev, so QA judges only *new* failures) and **validated** on tasks
+  D and E — both passed QA in a single round despite the repo's 450 pre-existing
+  snapshot failures. See *How the pipeline got here → Experiment 4*.
+
+**The mechanism:** the knowledge base buys a cheap, accurate **localization** step, and
+with the pinned files' contents fed straight into the Dev prompt, the Dev step stops
+re-discovering what the PM already found — so it stays cheap too. Baseline cost tracks
+**localizability**, not lines of code; pipeline cost tracks the **gate floor + how many
+Dev↔Review rounds** a task takes. Spend the one-time KB money on repeated, hard-to-localize
+work against the *same* repo — and read the diff on the hardest bugs.
+
+---
+
+## Full experiments (chronological — where the numbers above come from)
+
+The sections below are in the order they were run, oldest first, so the fixes make sense
+in sequence. Two version labels to keep straight:
+
+* **Earlier, un-tuned pipeline** — Experiments 1 and 2, and the *first two rounds* of
+  Experiment 3 (clean + optimization round). These predate the file-content-injection
+  change and do **not** reflect the shipped pipeline; they're kept to show *why* each fix
+  was made.
+* **Current pipeline** — Experiment 3's **file-injection round** and all of
+  **Experiment 4** (file-injection, plus the concurrency-lock and QA-baseline fixes added
+  mid-Experiment-4). These are the runs the summary table above is drawn from.
 
 ---
 

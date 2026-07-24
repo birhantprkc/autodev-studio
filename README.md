@@ -27,23 +27,31 @@ is cheaper and better-localized changes — and on hard-to-find tasks, it beats 
 
 ### It measurably beats a cold agent on hard tasks
 
-I ran the pipeline head-to-head against plain Claude Code across **four repos of
-increasing size (2k → 82k LOC) and twelve tasks**, giving both systems the identical
-plain-English request. The full method and per-task numbers are in
-**[benchmarks/kb-vs-claude-code.md](benchmarks/kb-vs-claude-code.md)**. The headline:
+I ran the current pipeline head-to-head against plain Claude Code, giving both systems
+the identical plain-English request. On the **two largest repos** tested —
+Textualize/rich (~35.6k LOC) and Textualize/textual (~82.5k LOC) — **the tuned pipeline
+beat a cold `claude -p` on every task it localized well, by 7% to 75%:**
 
-- **What drives baseline cost is *localizability*, not repo size.** A cross-cutting
-  bug can cost a cold agent 3.5× the tokens of a greppable one in the *same* repo. On
-  one 82k-LOC repo the cold baseline spent **$6.83 over 207 turns** hunting a single
-  cache-decorator bug.
-- **The knowledge base reliably buys a cheap, accurate localization step**, and that
-  saving grows with how hard the task is to find. With pinned files injected into the
-  Dev prompt, the tuned pipeline came in **−26% to −45%** on well-localized tasks and
-  **−36% / −75%** on the two hardest-to-localize bugs.
-- **It's not a free lunch, and the report says so.** The five gated stages have a
-  fixed cost floor that hurts on cheap greppable edits, and a cheap "win" on a hard
-  bug can hide a fix that only covers part of the root cause. The write-up is honest
-  about every loss.
+| Repo | Task | Pipeline | Cold Claude Code | Δ |
+|---|---|---:|---:|---:|
+| rich | feature | $0.333 | $0.449 | **−26%** |
+| rich | cross-cutting bug | $0.456 | $0.828 | **−45%** |
+| textual | feature | $0.380 | $0.590 | **−36%** |
+| textual | extreme cross-cutting bug | $1.705 | $6.830 | **−75%** |
+| textual | medium bug | $1.697 | $2.146 | **−21%** |
+| textual | greppable bug | $0.374 | $0.401 | **−7%** |
+
+- **The saving grows with how hard a task is to find.** On the extreme case the cold
+  baseline spent **$6.83 over 207 turns** (14.3M tokens) hunting one cache-decorator
+  bug; the pipeline localized and fixed it for a quarter of the cost — *and* shipped it
+  with a locked scope, independent QA, cross-provider review, and a PR branch the raw
+  baseline never produces.
+- **What drives baseline cost is *localizability*, not repo size.** A cross-cutting bug
+  can cost a cold agent 3.5× the tokens of a greppable one in the *same* repo.
+- **It's honest about the edges.** On a *very* cheap task (baseline ~$0.21) the
+  five-stage floor can cost more than a cold run saves, and on the hardest bug the cheap
+  win shipped a narrower fix than the baseline. The [full report](benchmarks/kb-vs-claude-code.md)
+  documents both, plus the earlier un-tuned iterations that led here.
 
 > The benchmark is the interesting part of this project — read it before the code.
 
