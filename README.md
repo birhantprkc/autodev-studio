@@ -57,6 +57,39 @@ beat a cold `claude -p` on every task it localized well, by 7% to 75%:**
 
 ---
 
+## Who this is for: the economics of a one-time knowledge base
+
+A cold coding agent pays the **localization tax on every single task** — it re-reads the
+repo from scratch to figure out *where* the change goes, every time. On a large codebase
+that tax is brutal and recurring: in the benchmark, one cold run spent **$6.83 and 207
+turns** just locating a single bug in an 82k-LOC repo. Do that fifty times a week across a
+team and you're paying to rediscover the same architecture over and over.
+
+AutoDev Studio pays that cost **once**. Ingesting a repo builds a durable knowledge base —
+structured architecture/module/feature views plus an embedding index — that persists on
+disk and refreshes incrementally as the repo moves. After that, every task amortizes it:
+localization becomes a cheap retrieval instead of an expensive cold hunt.
+
+That makes the value proposition sharpest exactly where real engineering work lives:
+
+- **Teams shipping against the same large repo, day after day.** You don't onboard a new
+  codebase every morning — you make change after change to the *same* one. The KB is built
+  once and every subsequent ticket rides on it. The more you use a repo, the cheaper each
+  task gets relative to a cold agent.
+- **Big, hard-to-navigate codebases.** The payoff grows with repo size and with how hard
+  changes are to localize — the two things that make a cold agent most expensive are the
+  two things the KB most directly neutralizes.
+- **Onboarding and tribal knowledge.** The same structured views that ground the agents
+  are a queryable map of the system — architecture, workflows, domain rules, integrations —
+  extracted from the code, not from a stale wiki.
+
+The break-even is honest and known: for a stream of *tiny*, trivially-greppable edits, a
+cold `claude -p` is cheaper because the KB can't save what was never expensive. The KB wins
+when work is **repeated, against a substantial repo, on changes that take real finding** —
+which is to say, most of what a team actually does.
+
+---
+
 ## Features
 
 | | Feature |
@@ -66,6 +99,7 @@ beat a cold `claude -p` on every task it localized well, by 7% to 75%:**
 | **Agentic PM scoping** | A PM agent runs a Socratic clarify-loop, hunting for ambiguity before locking a scope, then drafts concrete engineering tickets. |
 | **Human approval gate** | No agent touches code until a human approves the ticket (optionally pushed to Jira). |
 | **Dev → QA → Review → PR pipeline** | Runs on an isolated branch of a cloned working copy; opens a real PR via `gh`. |
+| **Provider- & model-agnostic** | Every pipeline stage picks its own provider *and* model, live from the UI. Native support for the **Anthropic Messages API**, the **Claude Code CLI**, and **any OpenAI-compatible endpoint** — Groq, OpenAI, Gemini, xAI, OpenRouter, Together, DeepSeek, a local Ollama, whatever. Routing is by provider *kind*, not guessed from the model name. |
 | **Cross-provider review** | The model that *writes* the code is deliberately a different family than the one that *reviews* it, to decorrelate blind spots. |
 | **Bounded revise loop** | QA/Review feedback is fed back to Dev for up to N rounds, with conservative verdict parsing. |
 | **Live board + cost meter** | Kanban lanes, streamed agent logs, and real token/cost breakdowns per ticket, scope, and agent. |
@@ -79,8 +113,9 @@ beat a cold `claude -p` on every task it localized well, by 7% to 75%:**
 
 ### Prerequisites
 - **Python 3.11+** and **git**
-- At least one LLM key (an `OPENAI_API_KEY`, or any OpenAI-compatible provider — the
-  defaults target Groq's free tier)
+- At least one LLM key — **any** provider works: the native Anthropic API, or any
+  OpenAI-compatible endpoint (OpenAI, Groq, Gemini, xAI, OpenRouter, a local Ollama…).
+  The defaults target Groq's **free tier**, so you can run the whole thing for $0.
 - *Optional:* the **Claude Code CLI** authenticated (best Dev/Review quality; falls
   back to the OpenAI path without it) · the **`gh`** CLI (only to open real PRs)
 
@@ -138,6 +173,28 @@ ingest repo → build knowledge base
 The HTTP request that starts a run returns immediately; the pipeline executes on a
 worker thread and streams progress through the database that the UI polls.
 
+### It's a system, not a prompt wrapper
+
+The knowledge base is the clever part, but the machinery around it is what makes it
+usable by more than its author:
+
+- **A real state machine, not a chain of `if`s.** The orchestrator drives tickets through
+  explicit SDLC lanes with a *bounded* revise loop, and parses agent verdicts with
+  deliberately conservative rules — an errored agent is `INCONCLUSIVE`, never silently a
+  pass, so an unreviewed change can't slip through looking clean.
+- **Honest observability.** Every agent run records real tokens, cost, and duration — read
+  straight from the Claude CLI's own meter and each API's usage — rolled up per ticket,
+  scope, and agent. The cost numbers in the benchmark come from this, not an estimate.
+- **Safe by default.** Demo mode dry-runs the PR stage until you opt in. Auth is required
+  everywhere but the login page; roles (`viewer`/`member`/`admin`) are enforced
+  server-side; API keys are encrypted at rest.
+- **Degrades instead of breaking.** No embedding stack → TF-IDF retrieval. No Claude CLI →
+  the OpenAI-compatible edit loop. No Jira → a no-op. It runs fully offline, zero-CDN, on a
+  free-tier key.
+- **Grounded, not hallucinated.** The structured views take their *facts* from static
+  analysis (`ast`) and let the LLM supply only interpretation — so the map the agents
+  navigate by is anchored to the real code.
+
 Full write-ups:
 - **[docs/architecture.md](docs/architecture.md)** — components, the pipeline, the
   request flow, cross-provider review, and the revise loop.
@@ -191,5 +248,5 @@ to report a vulnerability.
 ---
 
 <div align="center">
-<sub>MIT Licensed · built with FastAPI, Claude, and an OpenAI-compatible stack</sub>
+<sub>MIT Licensed · FastAPI · provider-agnostic (Anthropic · Claude Code CLI · any OpenAI-compatible endpoint)</sub>
 </div>
