@@ -1,0 +1,39 @@
+# ── Secrets ───────────────────────────────────────────────────────────────
+.env
+.env.local
+# Local Fernet key encrypting API keys saved from the Settings screen (crypto.py)
+.secret.key
+
+# ── Application state ─────────────────────────────────────────────────────
+*.db
+*.db-journal
+*.db-wal
+# Cloned working copies the agents edit
+**/.workspace/
+# Embedded Qdrant vector store
+.qdrant/
+# Structured knowledge documents (regenerated per repo on ingest)
+.knowledge/
+logs/
+*.log
+
+# ── Python ────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+
+# ── Editors / OS ──────────────────────────────────────────────────────────
+.claude/
+.vscode/
+.idea/
+.DS_Store
+*.swp

@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Costs{% endblock %}
+{% block page %}costs{% endblock %}
+{% block heading %}Costs{% endblock %}
+{% block subheading %}Real token and dollar accounting · per scope · per ticket · per agent{% endblock %}
+
+{% block main %}
+<div style="display:flex; flex-direction:column; height:100%; padding:16px 20px; gap:14px">
+  <div id="cost-totals" style="display:grid; grid-template-columns:repeat(4, 1fr); gap:12px; flex-shrink:0"></div>
+  <div class="panel-body" id="cost-scopes" style="display:flex; flex-direction:column; gap:14px; padding-bottom:8px"></div>
+</div>
+{% endblock %}

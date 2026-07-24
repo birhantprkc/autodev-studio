@@ -1,0 +1,164 @@
+# Architecture
+
+AutoDev Studio is a control plane for an autonomous software-development pipeline.
+A human describes a feature in plain English; a chain of specialized agents scopes
+it, writes the code on an isolated branch of a cloned repo, tests it, reviews it,
+and (optionally) opens a real pull request — each agent grounded in a retrieval
+knowledge base built from the target repository.
+
+## Components
+
+```mermaid
+graph TB
+    subgraph Browser["Browser — Jinja SSR + vanilla JS"]
+        UI["Screens: Scope Chat · Board · Agents · Knowledge · Costs · Settings"]
+    end
+
+    subgraph App["FastAPI app (:8017)"]
+        Routers["Routers: auth · settings · repos · sessions · tasks · agents · costs · overview"]
+        Orch["orchestrator — Dev → QA → Review → PR + revise loop"]
+        BG["background — in-process thread pool"]
+        KB["knowledge/ + local_rag — analyze · index · retrieve"]
+        Agents["pm_agent · claude_agent · openai_agent"]
+        Git["git_ops — clone / branch / diff / PR"]
+        DB[("SQLite (SQLModel)")]
+    end
+
+    Providers["LLM providers (Claude CLI · OpenAI-compatible · Anthropic API)"]
+    GH["GitHub (gh CLI)"]
+    Jira["Jira Cloud (optional)"]
+
+    UI --> Routers --> DB
+    Routers --> BG --> Orch
+    Orch --> Agents & Git & KB
+    Agents --> Providers
+    Git --> GH
+    Routers --> Jira
+```
+
+The frontend is server-rendered Jinja templates plus a small vanilla-JS layer; the
+same FastAPI app serves both the UI and the JSON API. There is no build step and no
+CDN dependency — it runs fully offline.
+
+## The pipeline
+
+```
+ingest repo → build knowledge base (structured views + RAG index)
+  → PM agent clarifies the request + drafts tickets → human approval (+ optional Jira)
+  → Dev agent writes code on an agent/<key> branch of a cloned working copy
+  → QA agent runs tests + reviews          ┐
+  → Review agent checks the diff vs criteria ├─ revise loop ×N on failure
+  → PR stage pushes + opens a real PR        ┘
+  → human merges
+```
+
+### Sequence of a pipeline run
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User
+    participant API as tasks router
+    participant BG as background (thread pool)
+    participant Orch as orchestrator
+    participant KB as knowledge base
+    participant Git as git_ops
+    participant Dev as Dev agent
+    participant QA as QA agent
+    participant DB as SQLite
+
+    User->>API: POST /tasks/{id}/run
+    API->>DB: load task; assert approved
+    API->>BG: submit(run_pipeline, id)
+    API-->>User: 200 (returns immediately)
+    Note over User: UI polls /agents/runs + /tasks/board
+
+    BG->>Orch: run_pipeline(id)
+    Orch->>Git: ensure_clone + checkout agent/<key>
+    Orch->>KB: retrieve scoped, file-cited context
+    Orch->>Dev: implement ticket with injected context
+    Dev-->>Orch: streamed tool-use/text events → live logs
+    Orch->>Git: commit + diff
+    Orch->>QA: run tests + review the diff
+    QA-->>Orch: VERDICT + findings
+    Orch->>Dev: review the diff vs acceptance criteria
+    Dev-->>Orch: APPROVED / CHANGES REQUESTED
+    alt DEMO_MODE
+        Orch->>DB: log "would open PR: ..."
+    else real PR
+        Orch->>Git: push + gh pr create → pr_url
+    end
+    Orch->>DB: finalize runs; advance task status
+```
+
+**The HTTP request returns before the work starts.** The router validates and
+enqueues; the orchestrator runs on a worker thread and communicates progress purely
+through database writes that the UI polls. This keeps the request cycle fast and
+lets a run survive a client disconnect.
+
+## The agents
+
+| Agent | Default role | Prompt source |
+|---|---|---|
+| **PM** | Clarify the request in a Socratic loop, then draft grounded tickets | `pm_agent` |
+| **Dev** | Implement the ticket in a cloned working copy | `prompts.dev` / `prompts.revise` |
+| **QA** | Run tests and review the diff skeptically | `prompts.QA_SYSTEM` / `qa_user` |
+| **Review** | Review the diff against the acceptance criteria | `prompts.review` / `REVIEW_SYSTEM` |
+| **PR** | Push the branch and open the PR (the `gh` CLI, not an LLM) | `prompts.pr_body` |
+
+Each stage's provider and model are configurable independently — see
+[configuration.md](configuration.md).
+
+## Two design ideas worth calling out
+
+### Cross-provider bias reduction
+
+The agent that *writes* the code and the agent that *reviews* it are deliberately
+different model families. Author and reviewer having uncorrelated blind spots means a
+bug one model can't see, the other is more likely to catch. The default posture puts
+a frontier model on the Dev step (the one stage that genuinely needs it) and cheaper
+models on QA/Review — see the [benchmarks](../benchmarks/kb-vs-claude-code.md) for why
+that split holds up in practice.
+
+### Bounded revise loop
+
+The orchestrator is a sequential state machine over `TaskStatus`, chosen over a graph
+framework for transparency. On top of it sits a control loop: if QA fails or Review
+requests changes, the feedback is fed back to the Dev agent and QA + Review re-run, up
+to `MAX_REVISION_ROUNDS` times. Verdicts are parsed from free text with deliberately
+conservative rules — an explicit `VERDICT: FAIL` triggers a revision, but a softer
+`CONCERNS` does not, and an agent call that errors with no verdict at all is stamped
+`INCONCLUSIVE` rather than silently read as a pass. (These rules are unit-tested in
+[`tests/test_orchestrator_verdicts.py`](../tests/test_orchestrator_verdicts.py).)
+
+## Execution model
+
+The Dev and Review agents don't use a bespoke tool schema — when pointed at the Claude
+Code CLI they drive it as a subprocess, which is itself an agent with file-editing
+tools. `claude_agent.run_claude` parses the CLI's `stream-json` events (`tool_use`,
+`text`, `result`), turning real tool calls into live log lines and reading exact cost
+from the final event. The OpenAI-compatible coding path instead uses structured JSON
+output (`{files: [{path, content}]}`) that the service writes to disk behind safety
+guards.
+
+Every agent run records real tokens, cost, and duration, rolled up per ticket, per
+scope, and per agent on the Costs screen.
+
+## Persistence
+
+State lives in SQLite via SQLModel — repos, scope sessions, chat messages, tasks,
+agent runs, log entries, users, auth sessions, and runtime setting overrides. Schema
+creation is `SQLModel.metadata.create_all`, with a small additive migration step in
+[`database.py`](../backend/app/database.py) that `ALTER TABLE`s in new columns so an
+existing database keeps working across upgrades.
+
+## Safety posture
+
+- **`DEMO_MODE` is on by default** — the PR stage is a dry-run that logs the PR it
+  *would* open and never pushes, until you explicitly opt in and authenticate `gh`.
+- **Auth is required** for everything except the login page and `/health`; roles
+  (`viewer` < `member` < `admin`) are enforced server-side.
+- **API keys are encrypted at rest** (Fernet) when saved from the Settings screen.
+- The agents execute code from cloned repositories, so treat the host accordingly —
+  the Docker image runs as a non-root user, and untrusted repos should be sandboxed
+  (see [Future work](../README.md)).

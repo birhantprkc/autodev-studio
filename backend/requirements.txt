@@ -1,0 +1,9 @@
+# Dependencies are declared in ../pyproject.toml (the single source of truth).
+# This file exists only for `pip install -r` workflows and tooling that expects
+# it. Prefer:
+#
+#     pip install -e ".[semantic]"     # from the repo root
+#
+# The [semantic] extra adds the local-embeddings knowledge base (fastembed +
+# qdrant); without it the RAG falls back to a pure-Python TF-IDF index.
+-e ..[semantic]

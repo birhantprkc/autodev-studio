@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>{% block title %}AutoDev Studio{% endblock %} · AutoDev Studio</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 24 24%27%3E%3Crect width=%2724%27 height=%2724%27 rx=%276%27 fill=%27%235c8ef2%27/%3E%3Cpath d=%27M12 5l1.5 4.2L18 11l-4.5 1.8L12 17l-1.5-4.2L6 11l4.5-1.8z%27 fill=%27white%27/%3E%3C/svg%3E"/>
+<link rel="stylesheet" href="/static/app.css?v={{ asset_version }}"/>
+<script>
+  // Apply the saved theme before first paint (avoids a flash).
+  try { var t = localStorage.getItem("autodev.theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+</script>
+<script src="/static/icons.js?v={{ asset_version }}"></script>
+</head>
+<body data-page="{% block page %}{% endblock %}" data-role="{{ role }}" data-username="{{ username }}">
+
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="mark" id="brand-mark"></div>
+      <div>
+        <div class="name">AutoDev Studio</div>
+        <div class="tag">Agentic SDLC</div>
+      </div>
+    </div>
+
+    <div class="repo-switch" id="repo-switch">
+      <button type="button" id="repo-switch-btn">
+        <span id="repo-switch-icon" class="faint"></span>
+        <span class="repo-label">
+          <span class="repo-name" id="repo-switch-name">Loading…</span>
+          <span class="repo-meta" id="repo-switch-meta"></span>
+        </span>
+        <span class="faint" id="repo-switch-chev"></span>
+      </button>
+      <div class="menu" id="repo-switch-menu" hidden></div>
+    </div>
+
+    {% set nav = active_nav|default('scope') %}
+    {% macro navlink(id, href, icon_name, label) %}
+    <a class="nav-item {% if nav == id %}active{% endif %}" href="{{ href }}" data-icon="{{ icon_name }}">{{ label }}</a>
+    {% endmacro %}
+    <nav class="nav">
+      {{ navlink('scope', '/', 'chat', 'Scope Chat') }}
+      {{ navlink('board', '/board', 'board', 'Board') }}
+      {{ navlink('agents', '/agents', 'bot', 'Agents') }}
+      {{ navlink('knowledge', '/knowledge', 'book', 'Knowledge') }}
+      {{ navlink('costs', '/costs', 'coins', 'Costs') }}
+    </nav>
+
+    <div class="grow"></div>
+
+    <nav class="nav">
+      {{ navlink('settings', '/settings', 'gear', 'Settings') }}
+    </nav>
+
+    <div class="user-card">
+      <div class="avatar">{{ username[:1] }}</div>
+      <div class="grow">
+        <div class="u-name truncate">{{ username }}</div>
+        <div class="u-role">{{ role }}</div>
+      </div>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme"></button>
+      <button class="icon-btn" id="logout-btn" title="Sign out"></button>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <div>
+        <h1>{% block heading %}{% endblock %}</h1>
+      </div>
+      <div class="sub">{% block subheading %}{% endblock %}</div>
+      <div class="spacer"></div>
+      <div id="topbar-actions" class="row">{% block actions %}{% endblock %}</div>
+      <div class="metrics" id="shell-metrics" title="Totals for the selected repository">
+        <div class="metric"><span class="m-label">Runs</span><span class="m-value" id="m-runs">—</span></div>
+        <div class="metric"><span class="m-label">Active</span><span class="m-value" id="m-active">—</span></div>
+        <div class="metric"><span class="m-label">Tokens in / out</span><span class="m-value" id="m-tokens">—</span></div>
+        <div class="metric"><span class="m-label">Cost</span><span class="m-value" id="m-cost">—</span></div>
+      </div>
+    </header>
+    <div class="content">
+      {% block main %}{% endblock %}
+    </div>
+  </div>
+</div>
+
+<!-- Ticket detail drawer (global) -->
+<div id="drawer-root">
+  <div class="drawer-backdrop" id="drawer-backdrop"></div>
+  <div class="drawer" id="drawer" role="dialog" aria-modal="true">
+    <div id="drawer-body" class="panel" style="height:100%"></div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+<div id="modal-root"></div>
+
+<script src="/static/api.js?v={{ asset_version }}"></script>
+<script src="/static/app.js?v={{ asset_version }}"></script>
+</body>
+</html>

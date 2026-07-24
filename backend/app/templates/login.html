@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Sign in · AutoDev Studio</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 24 24%27%3E%3Crect width=%2724%27 height=%2724%27 rx=%276%27 fill=%27%235c8ef2%27/%3E%3Cpath d=%27M12 5l1.5 4.2L18 11l-4.5 1.8L12 17l-1.5-4.2L6 11l4.5-1.8z%27 fill=%27white%27/%3E%3C/svg%3E"/>
+<link rel="stylesheet" href="/static/app.css?v={{ asset_version }}"/>
+<script>
+  try { var t = localStorage.getItem("autodev.theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+</script>
+<script src="/static/icons.js?v={{ asset_version }}"></script>
+</head>
+<body>
+<div class="login-page">
+  <form class="login-card" id="login-form">
+    <div class="brand">
+      <div class="mark" id="brand-mark"></div>
+      <div>
+        <div class="name">AutoDev Studio</div>
+        <div class="tag">Agentic SDLC platform</div>
+      </div>
+    </div>
+
+    <div class="field" style="margin-bottom:12px">
+      <label for="login-username">Username</label>
+      <input class="input" id="login-username" autocomplete="username" autofocus/>
+    </div>
+    <div class="field" style="margin-bottom:16px">
+      <label for="login-password">Password</label>
+      <input class="input" id="login-password" type="password" autocomplete="current-password"/>
+    </div>
+
+    <div id="login-error" class="small" style="color:var(--danger); min-height:18px; margin-bottom:8px"></div>
+
+    <button class="btn btn-primary btn-block" type="submit" id="login-submit">Sign in</button>
+
+    <p class="small faint" style="margin:16px 0 0; line-height:1.5">
+      First run? Sign in as <span class="kbd">admin</span> with the one-time password printed
+      in the server log on first boot (or the one you set via
+      <span class="kbd">ADMIN_PASSWORD</span>).
+    </p>
+  </form>
+</div>
+
+<script>
+  document.getElementById("brand-mark").innerHTML = icon("spark", 16);
+  const form = document.getElementById("login-form");
+  const err = document.getElementById("login-error");
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    err.textContent = "";
+    const btn = document.getElementById("login-submit");
+    btn.disabled = true;
+    try {
+      const r = await fetch("/auth/login", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          username: document.getElementById("login-username").value.trim(),
+          password: document.getElementById("login-password").value,
+        }),
+      });
+      if (!r.ok) {
+        const body = await r.json().catch(() => ({}));
+        throw new Error(body.detail || "Sign-in failed");
+      }
+      location.href = "/";
+    } catch (ex) {
+      err.textContent = ex.message;
+      btn.disabled = false;
+    }
+  });
+</script>
+</body>
+</html>
