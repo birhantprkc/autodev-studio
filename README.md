@@ -13,6 +13,12 @@ in a knowledge base of that repo, with a live board and full cost accounting.
 ![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
+<br>
+
+![The delivery board](docs/screenshots/board-dark.png)
+
+<sub>The delivery board — tickets flow through Backlog → Scoped → Approved → Dev → QA → Review → PR, with live token/cost totals in the header.</sub>
+
 </div>
 
 ---
@@ -194,6 +200,18 @@ usable by more than its author:
 - **Grounded, not hallucinated.** The structured views take their *facts* from static
   analysis (`ast`) and let the LLM supply only interpretation — so the map the agents
   navigate by is anchored to the real code.
+
+### Screenshots
+
+| Agents — live pipeline + streamed output | Costs — real per-ticket, per-agent accounting |
+|:--:|:--:|
+| ![Agents](docs/screenshots/agents-dark.png) | ![Costs](docs/screenshots/costs-dark.png) |
+| **Knowledge — repos & their knowledge bases** | **Settings — any provider, any model, per stage** |
+| ![Knowledge](docs/screenshots/knowledge-dark.png) | ![Settings](docs/screenshots/settings-dark.png) |
+
+<sub>Hand-rolled design system, zero CDN, dark **and** light themes — here's the board in light mode:</sub>
+
+![Board in light mode](docs/screenshots/board-light.png)
 
 Full write-ups:
 - **[docs/architecture.md](docs/architecture.md)** — components, the pipeline, the
