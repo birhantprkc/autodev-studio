@@ -9,7 +9,6 @@ to merge.
 import logging
 import re
 import shutil
-import sys
 import time
 from pathlib import Path
 
@@ -220,14 +219,14 @@ def _verified_locations(path: str, files: list[str] | None, symbols: list[str] |
 
 
 def _test_cmd(path: str) -> str:
-    """Interpreter command the Dev agent should run tests with — only when the
-    per-repo test env exists (the server's own python usually can't import the
-    target repo, so advertising it would just mislead the agent)."""
+    """Test command the Dev agent should verify with — '' when tests can't
+    actually run here (advertising a broken command just misleads the agent).
+    Ecosystem-aware: pytest in the per-repo venv, npm test, go test, cargo test
+    (see lang.detect_runner); building the env is a side effect."""
     try:
-        py = git_ops.test_python(path)
+        return git_ops.test_command(path)
     except Exception:  # noqa: BLE001
         return ""
-    return "" if py == sys.executable else f"{py} -m pytest -q"
 
 
 def _is_transient(err: str) -> bool:

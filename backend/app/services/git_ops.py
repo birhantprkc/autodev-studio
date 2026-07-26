@@ -14,6 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from ..config import settings
+from . import lang
 
 _GITHUB_API = "https://api.github.com"
 
@@ -517,17 +518,73 @@ def test_python(path: str) -> str:
     return sys.executable
 
 
+def ensure_test_env(path: str) -> "lang.Runner | None":
+    """Detect the repo's test ecosystem and make it runnable (best-effort):
+    python → per-repo venv via test_python(); node → npm install when
+    node_modules is missing; go/cargo fetch their own deps on first run.
+    Returns the runner, or None when no ecosystem is recognized."""
+    root = Path(path).resolve()
+    runner = lang.detect_runner(root)
+    if runner is None:
+        return None
+    if runner.setup == "npm" and not (root / "node_modules").exists():
+        _exclude_local(path, "node_modules/")
+        try:
+            has_lock = (root / "package-lock.json").exists()
+            _run(["npm", "ci" if has_lock else "install", "--no-audit", "--no-fund"],
+                 cwd=path, timeout=600, check=False)
+        except Exception:  # noqa: BLE001 — best-effort; tests then report None
+            pass
+    return runner
+
+
+def test_command(path: str) -> str:
+    """Command string the Dev agent should run tests with, '' when tests can't
+    actually run here (advertising a broken command just misleads the agent).
+    For Python this builds the per-repo venv as a side effect."""
+    runner = ensure_test_env(path)
+    if runner is None:
+        return ""
+    if runner.kind == "python":
+        py = test_python(path)
+        return "" if py == sys.executable else f"{py} -m pytest -q"
+    return runner.label
+
+
 def import_check(path: str, files: list[str]) -> tuple[bool | None, str]:
-    """Import-smoke edited Python modules in the repo's test env to catch
-    NameError/ImportError-class corruption that AST-parsing can't (a syntactically
-    valid but semantically broken edit — e.g. a stray reference at module scope).
-    Returns (ok, detail); ok is None when there's no venv/nothing importable."""
+    """Smoke-check edited source files for semantic corruption the edit-time
+    parse gate can't see (e.g. a stray module-scope reference). Python modules
+    are imported in the repo's test env; Go repos get `go build ./...`; Rust
+    `cargo check`. Returns (ok, detail); ok is None when nothing is checkable
+    (unknown language / missing toolchain — fail open)."""
+    src = [f for f in files if not lang.is_test_file(f)]
+    if any(f.endswith(".go") for f in src):
+        return _build_smoke(path, ["go", "build", "./..."], "go.mod", "go")
+    if any(f.endswith(".rs") for f in src):
+        return _build_smoke(path, ["cargo", "check", "-q"], "Cargo.toml", "cargo")
+    return _python_import_check(path, src)
+
+
+def _build_smoke(path: str, cmd: list[str], manifest: str, tool: str) -> tuple[bool | None, str]:
+    root = Path(path).resolve()
+    if not (root / manifest).exists() or shutil.which(tool) is None:
+        return None, f"no {tool} toolchain/manifest — skipped"
+    try:
+        p = subprocess.run(cmd, cwd=path, capture_output=True, text=True, timeout=300)
+    except Exception as exc:  # noqa: BLE001
+        return None, f"could not run {' '.join(cmd)}: {exc}"
+    if p.returncode == 0:
+        return True, f"`{' '.join(cmd)}` OK"
+    return False, (p.stderr or p.stdout)[-2000:]
+
+
+def _python_import_check(path: str, files: list[str]) -> tuple[bool | None, str]:
     root = Path(path).resolve()  # absolute — subprocess runs with cwd=path
     venv_py = (root / ".agent-venv" / "bin" / "python")
     py = str(venv_py) if venv_py.exists() else sys.executable
     mods: list[str] = []
     for f in files:
-        if not f.endswith(".py") or f.rsplit("/", 1)[-1].startswith("test_") or "tests/" in f:
+        if not f.endswith(".py"):
             continue
         # file path → dotted module (only for files inside a package with __init__)
         parts = f[:-3].split("/")
@@ -548,44 +605,56 @@ def import_check(path: str, files: list[str]) -> tuple[bool | None, str]:
     return False, (p.stderr or p.stdout)[-2000:]
 
 
-_FAIL_NODE_RE = re.compile(r"^(?:FAILED|ERROR)\s+(\S+)", re.MULTILINE)
-
-
 def _has_pytest_suite(root: Path) -> bool:
     return (root / "tests").exists() or (root / "pytest.ini").exists() or bool(list(root.glob("test_*.py")))
 
 
 def failing_tests(path: str, timeout: int = 600) -> set[str] | None:
-    """Node-ids of tests that FAIL/ERROR on the tree AS IT STANDS NOW. Returns None
-    when there is no runnable pytest suite. Captured on the clean tree BEFORE Dev
-    edits so QA can subtract these pre-existing failures and judge only the
-    regressions the change actually introduced — a repo that ships with failing
-    tests (e.g. textual's env-sensitive snapshot tests) otherwise makes QA read
-    every stale failure as a new regression and burn revision rounds on nothing."""
+    """Ids of tests that FAIL/ERROR on the tree AS IT STANDS NOW. Returns None
+    when there is no runnable suite OR the ecosystem's output has no reliably
+    parseable per-test ids (e.g. npm — the runner behind `npm test` varies).
+    Captured on the clean tree BEFORE Dev edits so QA can subtract these
+    pre-existing failures and judge only the regressions the change actually
+    introduced — a repo that ships with failing tests (e.g. textual's
+    env-sensitive snapshot tests) otherwise makes QA read every stale failure
+    as a new regression and burn revision rounds on nothing."""
     root = Path(path)
-    if not _has_pytest_suite(root):
+    runner = ensure_test_env(path)
+    if runner is None or runner.fail_re is None:
         return None
+    if runner.kind == "python":
+        if not _has_pytest_suite(root):
+            return None
+        cmd = [test_python(path), "-m", "pytest", "-q", "--tb=no", "-rfE",
+               "-p", "no:cacheprovider"]
+    else:
+        cmd = list(runner.cmd)
     try:
-        py = test_python(path)
-        p = subprocess.run([py, "-m", "pytest", "-q", "--tb=no", "-rfE", "-p", "no:cacheprovider"],
-                           cwd=path, capture_output=True, text=True, timeout=timeout)
+        p = subprocess.run(cmd, cwd=path, capture_output=True, text=True, timeout=timeout)
     except Exception:  # noqa: BLE001 — test envs vary wildly
         return None
-    if p.returncode == 5:  # no tests collected
+    out = p.stdout + p.stderr
+    if lang.no_tests_found(runner, p.returncode, out):
         return None
-    return set(_FAIL_NODE_RE.findall(p.stdout + p.stderr))
+    return lang.parse_failures(runner, out)
 
 
 def run_tests(path: str, test_paths: list[str] | None = None,
               timeout: int = 600) -> tuple[bool | None, str]:
-    """Best-effort: detect and run the repo's test suite. Returns (passed, output).
-    passed is None when no suite is found or deps are missing. With `test_paths`,
-    runs only those test files (targeted verification for the Dev loop)."""
+    """Best-effort: detect and run the repo's test suite (pytest / npm test /
+    go test / cargo test — see lang.detect_runner). Returns (passed, output).
+    passed is None when no suite is found or deps are missing — never a false
+    FAIL. With `test_paths`, runs only those test files where the ecosystem
+    supports targeting (pytest files; go per-package)."""
     root = Path(path)
     try:
-        if (root / "tests").exists() or (root / "pytest.ini").exists() or list(root.glob("test_*.py")):
-            py = test_python(path)
-            args = [py, "-m", "pytest", "-q"]
+        runner = ensure_test_env(path)
+        if runner is None:
+            return None, "No recognized test suite found."
+        if runner.kind == "python":
+            if not _has_pytest_suite(root):
+                return None, "No recognized test suite found."
+            args = [test_python(path), "-m", "pytest", "-q"]
             if test_paths:
                 existing = [t for t in test_paths if (root / t).exists()]
                 if existing:
@@ -597,10 +666,18 @@ def run_tests(path: str, test_paths: list[str] | None = None,
             if p.returncode in (2, 3, 4, 5) and ("error" in out.lower() or p.returncode == 5):
                 return None, out
             return p.returncode == 0, out
-        if (root / "package.json").exists():
-            p = subprocess.run(["npm", "test", "--silent"], cwd=path, capture_output=True,
-                               text=True, timeout=timeout)
-            return p.returncode == 0, (p.stdout + p.stderr)[-4000:]
+        args = list(runner.cmd)
+        if test_paths and runner.accepts_paths and runner.kind == "go":
+            # go test targets packages, not files — map the touched test files
+            # to their package dirs.
+            pkgs = sorted({"./" + str(Path(t).parent) for t in test_paths
+                           if (root / t).exists()})
+            if pkgs:
+                args = ["go", "test", *pkgs]
+        p = subprocess.run(args, cwd=path, capture_output=True, text=True, timeout=timeout)
+        out = (p.stdout + p.stderr)[-4000:]
+        if lang.no_tests_found(runner, p.returncode, out):
+            return None, out
+        return p.returncode == 0, out
     except Exception as exc:  # noqa: BLE001 — test envs vary wildly
         return None, f"Could not run tests: {exc}"
-    return None, "No recognized test suite found."

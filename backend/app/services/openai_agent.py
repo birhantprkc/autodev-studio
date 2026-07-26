@@ -1,7 +1,6 @@
 """QA agent on a DIFFERENT provider (OpenAI) so the review of Claude's work is
 less correlated with the model that wrote it."""
 
-import ast
 import json
 import re
 import time
@@ -9,7 +8,7 @@ import time
 import httpx
 
 from ..config import settings
-from . import providers
+from . import lang, providers
 
 _PATH_RE = re.compile(r"[A-Za-z0-9_][\w./\-]*\.[A-Za-z0-9]+")
 
@@ -351,15 +350,11 @@ def _apply_edit(original: str, search: str, replace: str) -> tuple[str, bool, st
 
 
 def _syntax_error(path: str, content: str) -> str | None:
-    """Parse gate for Python files: a merged result that no longer parses is
-    rejected before it touches disk (the model gets the error back instead)."""
-    if not path.endswith(".py"):
-        return None
-    try:
-        ast.parse(content)
-        return None
-    except SyntaxError as exc:
-        return f"line {exc.lineno}: {exc.msg}"
+    """Parse gate: a merged result that no longer parses is rejected before it
+    touches disk (the model gets the error back instead). Language-dispatched
+    via services/lang.py (Python ast; node --check / gofmt when available);
+    ungateable languages fail open — the test run still catches real breakage."""
+    return lang.syntax_error(path, content)
 
 
 def _apply_round(cwd: str, edits: list, new_files: list, written: list[str],
@@ -430,8 +425,7 @@ def _apply_round(cwd: str, edits: list, new_files: list, written: list[str],
 
 
 def _looks_like_test(path: str) -> bool:
-    name = path.rsplit("/", 1)[-1]
-    return "tests/" in path or name.startswith("test_") or name.endswith("_test.py")
+    return lang.is_test_file(path)
 
 
 def code(cwd: str, task_key: str, title: str, description: str, criteria: list[str],

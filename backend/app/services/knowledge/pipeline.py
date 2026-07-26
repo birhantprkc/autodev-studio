@@ -72,6 +72,16 @@ def generate(repo_url: str, progress=None) -> KnowledgeResult:
         if progress:
             progress("Embedding knowledge views…", 98)
         indexer.index(repo_url, docs)
+        # index() drops+recreates each domain collection touched by the new
+        # docs — but lessons live in the `modules` collection alongside module
+        # views, so a rebuild just wiped their vectors. Re-upsert every
+        # preserved cross-run doc (lessons + delivery notes; store.reset kept
+        # their JSON) so accumulated knowledge survives rebuilds in RETRIEVAL,
+        # not just on disk. Also self-heals vectors lost to earlier rebuilds.
+        preserved = [d for d in store.load_all(repo_url)
+                     if d.type in ("delivery_note", "lesson")]
+        if preserved:
+            indexer.upsert(repo_url, preserved)
 
         # Localization layer + freshness watermark: record which commit this
         # knowledge was built from, and persist the line-numbered symbol map

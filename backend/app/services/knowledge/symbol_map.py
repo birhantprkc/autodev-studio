@@ -110,7 +110,7 @@ def _analyze_one(root: Path, rel: str) -> dict | None:
     except OSError:
         return None
     lang = analyzer.language_of(rel)
-    symbols = analyzer.extract_symbols(source) if rel.endswith(".py") else []
+    symbols = analyzer.extract_symbols(rel, source)
     return {"language": lang, "symbols": symbols}
 
 

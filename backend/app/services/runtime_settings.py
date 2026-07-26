@@ -117,8 +117,9 @@ FIELDS: dict[str, Spec] = {
                            "Max model calls per ticket inside the Dev agent (edit, then verify rounds).",
                            type="int", min=1, max=10),
     "dev_run_tests": Spec("pipeline", "Run tests in Dev loop",
-                          "Run targeted pytest on touched test files inside the Dev loop, feeding real "
-                          "failures back to the model before QA.", type="bool"),
+                          "Run the repo's tests (pytest / npm / go / cargo) on touched test files "
+                          "inside the Dev loop, feeding real failures back to the model before QA.",
+                          type="bool"),
     "pm_max_retrieval_rounds": Spec("pipeline", "PM retrieval rounds",
                                     "Max on-demand knowledge lookups the PM may run within a single turn.",
                                     type="int", min=0, max=8),

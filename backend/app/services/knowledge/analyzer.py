@@ -1,10 +1,10 @@
 """Walks a cloned repository and extracts raw facts (never knowledge).
 
 Python files are parsed with the stdlib `ast` (top-level classes, functions,
-imports) plus a small regex pass for HTTP endpoints (FastAPI/Flask). Files in
-other languages are still recorded (path + language) so the module/architecture
-views can reason about the whole tree; only the symbol extraction is Python-aware
-today. Output is `ExtractedFacts` — facts only.
+imports); other languages go through the regex extractors in services/lang.py,
+so every supported language now yields classes/functions/imports — not just a
+path. A small regex pass finds HTTP endpoints (FastAPI/Flask decorators and
+Express-style `app.get("/…")`). Output is `ExtractedFacts` — facts only.
 """
 
 from __future__ import annotations
@@ -14,30 +14,22 @@ import logging
 import re
 from pathlib import Path
 
-from .. import git_ops
+from .. import git_ops, lang
 from .facts import Endpoint, ExtractedFacts, FileFacts
 
 logger = logging.getLogger(__name__)
 
-# Directories we never descend into.
-_SKIP_DIRS = {
-    ".git", "__pycache__", "node_modules", ".venv", "venv", "dist", "build",
-    ".next", ".turbo", "vendor", "target", "coverage", ".pytest_cache", ".qdrant",
-}
+# Kept as aliases — language knowledge itself lives in services/lang.py.
+_SKIP_DIRS = lang.SKIP_DIRS
+_LANG_BY_EXT = lang.LANG_BY_EXT
 
-# Extensions we record as files (symbol extraction is Python-only for now).
-_LANG_BY_EXT = {
-    ".py": "Python", ".js": "JavaScript", ".jsx": "JavaScript",
-    ".ts": "TypeScript", ".tsx": "TypeScript", ".go": "Go", ".java": "Java",
-    ".rb": "Ruby", ".rs": "Rust", ".php": "PHP", ".c": "C", ".cc": "C++",
-    ".cpp": "C++", ".h": "C", ".cs": "C#", ".kt": "Kotlin", ".swift": "Swift",
-    ".scala": "Scala", ".vue": "Vue", ".svelte": "Svelte",
-}
 _MAX_FILE_BYTES = 300_000
 
-# @app.get("/path"), @router.post('/path'), @app.route("/path", ...)
+# @app.get("/path"), @router.post('/path')  (Python decorators) and
+# app.get("/path", …), router.post('/path', …)  (Express/koa-router style).
+# The leading-slash requirement keeps map.get("key")-style lookups out.
 _ENDPOINT_RE = re.compile(
-    r"""@\w+\.(get|post|put|patch|delete|route)\(\s*["']([^"']+)["']""",
+    r"""@?\w+\.(get|post|put|patch|delete|route)\(\s*["'](/[^"']*)["']""",
     re.IGNORECASE,
 )
 _METHODS_RE = re.compile(r"methods\s*=\s*\[([^\]]*)\]", re.IGNORECASE)
@@ -63,7 +55,7 @@ def analyze_repo(repo_url: str) -> ExtractedFacts:
         if ext == ".py":
             facts.files.append(_analyze_python(rel, source))
         else:
-            facts.files.append(FileFacts(path=rel, language=language or "Other"))
+            facts.files.append(_analyze_other(rel, source, language or "Other"))
 
     logger.info("knowledge.analyzer: %s — %d files", repo_url, len(facts.files))
     return facts
@@ -115,34 +107,28 @@ def _analyze_python(rel: str, source: str) -> FileFacts:
     )
 
 
-def extract_symbols(source: str) -> list[dict]:
-    """Line-numbered symbol facts for one Python file — the raw material of the
-    localization symbol map. Unlike `_analyze_python` (names only, for the LLM
-    views), this keeps line numbers and descends into class bodies for methods:
-    [{"n": name, "k": class|function|method, "l": line, "p": parent_class}].
-    Returns [] for unparseable source."""
-    try:
-        tree = ast.parse(source)
-    except SyntaxError:
-        return []
-    symbols: list[dict] = []
-    for node in tree.body:
-        if isinstance(node, ast.ClassDef):
-            symbols.append({"n": node.name, "k": "class", "l": node.lineno})
-            for child in node.body:
-                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    symbols.append({"n": child.name, "k": "method",
-                                    "l": child.lineno, "p": node.name})
-        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            symbols.append({"n": node.name, "k": "function", "l": node.lineno})
-        elif isinstance(node, ast.Assign):
-            for tgt in node.targets:
-                if isinstance(tgt, ast.Name) and not tgt.id.startswith("_"):
-                    symbols.append({"n": tgt.id, "k": "const", "l": node.lineno})
-        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-            if not node.target.id.startswith("_"):
-                symbols.append({"n": node.target.id, "k": "const", "l": node.lineno})
-    return symbols
+def _analyze_other(rel: str, source: str, language: str) -> FileFacts:
+    """Non-Python facts via the lang registry's regex extractors. Languages
+    without an extractor still get path + language recorded (fail open)."""
+    symbols = lang.extract_symbols(rel, source)
+    return FileFacts(
+        path=rel,
+        language=language,
+        classes=[s["n"] for s in symbols if s["k"] == "class"],
+        functions=[s["n"] for s in symbols if s["k"] == "function"],
+        imports=lang.extract_imports(rel, source),
+        endpoints=_endpoints(rel, source),
+    )
+
+
+def extract_symbols(rel: str, source: str) -> list[dict]:
+    """Line-numbered symbol facts for one file — the raw material of the
+    localization symbol map. Unlike the FileFacts passes (names only, for the
+    LLM views), this keeps line numbers and descends into class bodies for
+    methods: [{"n": name, "k": class|function|method|const, "l": line,
+    "p": parent}]. Dispatches by extension via services/lang.py; returns []
+    for unparseable source or unsupported languages."""
+    return lang.extract_symbols(rel, source)
 
 
 def analyzable(rel: str) -> bool:
@@ -154,7 +140,7 @@ def analyzable(rel: str) -> bool:
 
 
 def language_of(rel: str) -> str:
-    return _LANG_BY_EXT.get(Path(rel).suffix.lower(), "Other")
+    return lang.language_of(rel)
 
 
 def _endpoints(rel: str, source: str) -> list[Endpoint]:

@@ -47,10 +47,13 @@ def _hints_block(affected_files: list[str] | None, target_symbols: list[str] | N
 
 
 def _test_block(test_cmd: str = "") -> str:
-    if test_cmd:
+    if "pytest" in test_cmd:
         return (f"Run the tests you add or touch with:  {test_cmd} <test files>\n"
                 "(that interpreter has this repo installed; plain `python` does not). "
                 "Iterate until they pass.")
+    if test_cmd:
+        return (f"Run the repo's tests with:  {test_cmd}\n"
+                "— use exactly this command. Iterate until they pass.")
     return "Add or update tests where appropriate and run them if a test runner is available."
 
 
