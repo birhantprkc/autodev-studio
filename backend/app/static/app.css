@@ -619,6 +619,14 @@ code { font-family: var(--font-mono); font-size: 0.92em; background: var(--surfa
 
 /* --- Settings ------------------------------------------------------------------------ */
 .settings-grid { max-width: 720px; display: flex; flex-direction: column; gap: 14px; }
+.settings-section-head {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase;
+  color: var(--text-muted);
+  margin: 26px 2px 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.settings-section-head:first-child { margin-top: 2px; }
 .setting-row {
   display: flex; align-items: flex-start; gap: 18px;
   padding: 13px 16px;
@@ -634,6 +642,32 @@ code { font-family: var(--font-mono); font-size: 0.92em; background: var(--surfa
 .preset-card { margin: 0 0 14px; padding: 13px 16px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .preset-card .preset-label { font-weight: 600; font-size: 13px; }
 .preset-card .grow { flex: 1; }
+/* Stage rows: the model dropdown (select.mono) stretches; the provider select stays fixed */
+.setting-row .s-control-stage select.mono { flex: 1; width: auto; min-width: 0; }
+
+/* Connections tab: one card per provider.
+   align-items: stretch => cards in a row share a height, so the grid stays even
+   instead of ragged; a card's key field sits directly under its header and the
+   optional Advanced/label footer is pinned to the bottom for a uniform look. */
+.prov-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 12px;
+  align-items: stretch;
+}
+.prov-card { padding: 14px 16px; display: flex; flex-direction: column; gap: 9px; }
+.prov-card .prov-head { gap: 8px; align-items: center; min-height: 24px; }
+.prov-card .prov-name { font-size: 13px; font-weight: 650; }
+.prov-card .prov-note { line-height: 1.45; }
+.prov-card .prov-field { display: flex; flex-direction: column; gap: 5px; }
+.prov-card .prov-field input, .prov-card .prov-field select { width: 100%; }
+/* Push the collapsible "Advanced" (binary path) to the card's bottom edge so
+   cards with and without it still line up cleanly. */
+.prov-adv { margin-top: auto; border-top: 1px solid var(--border); padding-top: 8px; }
+.prov-adv summary { cursor: pointer; font-size: 11.5px; color: var(--text-faint); list-style: none; }
+.prov-adv summary::before { content: "▸ "; }
+.prov-adv[open] summary::before { content: "▾ "; }
+.prov-adv[open] { padding-bottom: 2px; }
 
 /* Agent color coding (consistent across screens) */
 .ag-pm { color: var(--purple); } .ag-dev { color: var(--accent-strong); }

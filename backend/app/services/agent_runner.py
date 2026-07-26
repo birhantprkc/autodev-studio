@@ -66,14 +66,18 @@ def logger_for(run_id: int):
     return _emit
 
 
-def finish_run(run_id: int, task_id: int, t0: float, *, tokens_in: int = 0, tokens_out: int = 0,
-               cost: float = 0.0, error: str | None = None) -> None:
+def finish_run(run_id: int, task_id: int, t0: float, *, tokens_in: int | None = 0,
+               tokens_out: int | None = 0, cost: float | None = 0.0,
+               error: str | None = None) -> None:
+    """None for tokens/cost means the backend did not report usage — stored as 0
+    but flagged usage_unknown so the UI never shows a fake $0.00."""
     with Session(engine) as db:
         run = db.get(AgentRun, run_id)
         run.status = RunStatus.failed.value if error else RunStatus.completed.value
         run.tokens_input = tokens_in or 0
         run.tokens_output = tokens_out or 0
         run.cost_usd = round(cost or 0.0, 4)
+        run.usage_unknown = tokens_in is None or tokens_out is None or cost is None
         run.finished_at = utcnow()
         run.duration_ms = int((time.monotonic() - t0) * 1000)
         run.error = error

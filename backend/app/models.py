@@ -203,6 +203,9 @@ class AgentRun(SQLModel, table=True):
     tokens_input: int = 0
     tokens_output: int = 0
     cost_usd: float = 0.0
+    # True when the backend did not report tokens and/or cost for this run — the
+    # stored zeros then mean "unknown", not "free" (UI shows them as such).
+    usage_unknown: bool = False
 
     started_at: datetime | None = None
     finished_at: datetime | None = None

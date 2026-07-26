@@ -35,6 +35,9 @@ def _migrate() -> None:
             ("kb_tokens_out", "INTEGER DEFAULT 0"),
             ("kb_cost_usd", "FLOAT DEFAULT 0"),
         ],
+        "agentrun": [
+            ("usage_unknown", "BOOLEAN DEFAULT 0"),
+        ],
         "user": [
             ("github_login", "VARCHAR"),
             ("github_name", "VARCHAR"),

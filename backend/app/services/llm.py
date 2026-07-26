@@ -2,22 +2,25 @@
 
 Dispatches a (provider, model) chat call to the right transport:
   * ``anthropic`` provider  → the native Anthropic Messages API (anthropic_api.chat)
+  * ``claude-cli``/``agent`` kinds → the matching headless agentic CLI, in
+    pure-chat mode (agent_backends.chat)
   * everything else (OpenAI-compatible: groq/openai/gemini/xai/custom) → openai_agent.chat
 
 Callers pass their stage's ``settings.<stage>_provider`` + ``settings.<stage>_model``.
-Both transports return the same dict: {text, tokens_in, tokens_out, cost, model, error}.
+All transports return the same dict: {text, tokens_in, tokens_out, cost, model, error}.
 """
 
 from __future__ import annotations
 
-from . import anthropic_api, claude_agent, openai_agent, providers
+from . import agent_backends, anthropic_api, openai_agent, providers
 
 
 def chat(system: str, user: str = "", *, provider: str, model: str, timeout: int = 180,
          json_mode: bool = False, messages: list[dict] | None = None) -> dict:
-    if providers.kind(provider) == "claude-cli":
-        return claude_agent.chat(system, user, model=model, timeout=timeout,
-                                 json_mode=json_mode, messages=messages)
+    if providers.kind(provider) in ("claude-cli", "agent"):
+        return agent_backends.chat(providers.agent_backend(provider), system, user,
+                                   model=model, timeout=timeout,
+                                   json_mode=json_mode, messages=messages)
     if providers.kind(provider) == "anthropic":
         return anthropic_api.chat(system, user, model=model, timeout=timeout,
                                   json_mode=json_mode, messages=messages)

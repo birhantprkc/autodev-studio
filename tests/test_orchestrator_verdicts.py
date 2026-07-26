@@ -54,20 +54,20 @@ class TestInconclusive:
         assert not orch._inconclusive({"text": "VERDICT: APPROVED"})
 
 
-class TestClaudeUnavailable:
-    def test_missing_binary_is_unavailable(self, monkeypatch):
-        # No claude binary on PATH → unavailable regardless of the error text.
-        monkeypatch.setattr(orch.shutil, "which", lambda _: None)
-        assert orch._claude_unavailable("anything")
+class TestBackendUnavailable:
+    def test_missing_backend_is_unavailable(self, monkeypatch):
+        # Backend can't run on this machine → unavailable regardless of error text.
+        monkeypatch.setattr(orch.agent_backends, "is_available", lambda _b: False)
+        assert orch._backend_unavailable("claude-code", "anything")
 
-    def test_auth_error_with_binary_present_is_unavailable(self, monkeypatch):
-        monkeypatch.setattr(orch.shutil, "which", lambda _: "/usr/bin/claude")
-        assert orch._claude_unavailable("Invalid API key — please run login")
+    def test_auth_error_with_backend_present_is_unavailable(self, monkeypatch):
+        monkeypatch.setattr(orch.agent_backends, "is_available", lambda _b: True)
+        assert orch._backend_unavailable("claude-code", "Invalid API key — please run login")
 
-    def test_ordinary_error_with_binary_present_is_not_unavailable(self, monkeypatch):
-        # Binary exists and the error is a real code problem → keep the strong model.
-        monkeypatch.setattr(orch.shutil, "which", lambda _: "/usr/bin/claude")
-        assert not orch._claude_unavailable("syntax error in generated patch")
+    def test_ordinary_error_with_backend_present_is_not_unavailable(self, monkeypatch):
+        # Backend runs and the error is a real code problem → keep the strong model.
+        monkeypatch.setattr(orch.agent_backends, "is_available", lambda _b: True)
+        assert not orch._backend_unavailable("claude-code", "syntax error in generated patch")
 
 
 class TestIsTransient:

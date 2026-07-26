@@ -45,6 +45,12 @@ class Spec:
     max: float | None = None
     provider_field: str = ""   # for a "model" field: name of the paired provider field
     model_field: str = ""      # for a "provider" field: name of the paired model field
+    section: str = ""          # optional subsection heading within a tab
+    # Conditional visibility: "field=value" (alternatives with |, bools as
+    # true/false). The UI hides the row when the driver field's current value
+    # doesn't match — fields that only make sense in one mode don't clutter the
+    # others (e.g. the embeddings API URL only exists for the 'api' engine).
+    show_if: str = ""
 
 
 def _provider_spec(stage: str, label: str, help_text: str) -> Spec:
@@ -58,26 +64,52 @@ def _model_spec(stage: str, label: str, help_text: str) -> Spec:
 
 # Every runtime-editable settings field. Order here is the UI order.
 FIELDS: dict[str, Spec] = {
-    # --- Providers & keys ---
+    # --- Connections → API providers ---
     "openai_base_url": Spec("providers", "Primary endpoint base URL",
                             "The 'openai' provider's base URL. Points at Groq's free tier out of "
-                            "the box; set to https://api.openai.com/v1 for real OpenAI."),
+                            "the box; set to https://api.openai.com/v1 for real OpenAI.",
+                            section="API providers"),
     "openai_api_key": Spec("providers", "Primary endpoint API key",
-                           "Key for the base URL above (the 'openai' provider).", secret=True),
+                           "Key for the base URL above (the 'openai' provider).", secret=True,
+                           section="API providers"),
     "groq_api_key": Spec("providers", "Groq API key",
                          "Groq's own key + static endpoint, selectable as the 'groq' provider.",
-                         secret=True),
+                         secret=True, section="API providers"),
     "gemini_api_key": Spec("providers", "Gemini API key",
-                           "Google AI Studio key for the 'gemini' provider.", secret=True),
+                           "Google AI Studio key for the 'gemini' provider.", secret=True,
+                           section="API providers"),
     "xai_api_key": Spec("providers", "xAI (Grok) API key",
-                        "Key for the 'xai' provider (https://api.x.ai/v1).", secret=True),
+                        "Key for the 'xai' provider (https://api.x.ai/v1).", secret=True,
+                        section="API providers"),
     "anthropic_api_key": Spec("providers", "Anthropic API key",
                               "Used by the Anthropic API provider AND the Claude Code CLI. Without "
-                              "it the CLI falls back to the host's Claude login.", secret=True),
+                              "it the CLI falls back to the host's Claude login.", secret=True,
+                              section="API providers"),
     "custom_base_url": Spec("providers", "Custom provider base URL",
-                            "Any OpenAI-compatible endpoint (OpenRouter, Together, DeepSeek, Ollama…)."),
+                            "Any OpenAI-compatible endpoint (OpenRouter, Together, DeepSeek, Ollama…).",
+                            section="API providers"),
     "custom_api_key": Spec("providers", "Custom provider API key",
-                           "Key for the 'custom' provider above.", secret=True),
+                           "Key for the 'custom' provider above.", secret=True,
+                           section="API providers"),
+
+    # --- Connections → Agentic coding CLIs (path + key per tool; the card above
+    #     each shows install status and how to enable a missing one) ---
+    "codex_cli_path": Spec("providers", "Codex CLI path",
+                           "Binary for the Codex agent backend (default: codex).",
+                           section="Agentic coding CLIs"),
+    "cursor_cli_path": Spec("providers", "Cursor CLI path",
+                            "Binary for the Cursor agent backend (default: cursor-agent).",
+                            section="Agentic coding CLIs"),
+    "cursor_api_key": Spec("providers", "Cursor API key",
+                           "Key for the Cursor CLI agent backend. Without it cursor-agent uses "
+                           "the host's `cursor-agent login`.", secret=True,
+                           section="Agentic coding CLIs"),
+    "aider_cli_path": Spec("providers", "Aider path",
+                           "Binary for the Aider agent backend (default: aider).",
+                           section="Agentic coding CLIs"),
+    "gemini_cli_path": Spec("providers", "Gemini CLI path",
+                            "Binary for the Gemini CLI agent backend (default: gemini).",
+                            section="Agentic coding CLIs"),
 
     # --- Agent models (per stage: provider + model) ---
     "knowledge_provider": _provider_spec("knowledge", "Knowledge provider",
@@ -87,8 +119,9 @@ FIELDS: dict[str, Spec] = {
                                   "Scopes requirements and drafts tickets — the hardest reasoning stage."),
     "pm_model": _model_spec("pm", "PM model", "Model for the PM stage."),
     "dev_provider": _provider_spec("dev", "Dev provider",
-                                   "Who writes the code. 'Claude Code (CLI)' is the strongest (agentic) "
-                                   "path; 'auto' tries it then falls back to the OpenAI-compatible loop."),
+                                   "Who writes the code: any installed agentic CLI (Claude Code, Codex, "
+                                   "Cursor, Aider, Gemini CLI) or an OpenAI-compatible loop. 'auto' tries "
+                                   "Claude then falls back to the HTTP coding loop."),
     "dev_model": _model_spec("dev", "Dev model",
                              "Model for the Dev stage. For the CLI/auto provider use sonnet/opus/haiku."),
     "qa_provider": _provider_spec("qa", "QA provider",
@@ -101,13 +134,14 @@ FIELDS: dict[str, Spec] = {
     "review_model": _model_spec("review", "Review model", "Model for the Review stage."),
     "claude_model": Spec("models", "Claude CLI default model",
                          "Fallback CLI model when a Dev/Review stage on the CLI doesn't name one.",
-                         type="enum", options=list(providers.PROVIDERS["claude-cli"].models)),
+                         type="enum", options=list(providers.PROVIDERS["claude-cli"].models),
+                         section="Advanced"),
     "gemini_models": Spec("models", "Gemini fallback pool",
                           "Comma-separated gemini-* models added to the cross-provider fallback pool "
-                          "once a Gemini key is set."),
+                          "once a Gemini key is set.", section="Advanced"),
     "claude_max_budget_usd": Spec("models", "Claude budget cap ($/run)",
                                   "Hard dollar ceiling per Claude CLI run. 0 disables the cap.",
-                                  type="float", min=0, max=50),
+                                  type="float", min=0, max=50, section="Advanced"),
 
     # --- Pipeline limits ---
     "max_revision_rounds": Spec("pipeline", "Max revise rounds",
@@ -130,10 +164,28 @@ FIELDS: dict[str, Spec] = {
                            "How much of each file the Dev model sees. 30K covers most source files whole.",
                            type="int", min=4000, max=200000),
 
-    # --- Knowledge base ---
-    "rag_embeddings": Spec("knowledge", "Embeddings",
-                           "semantic = local fastembed + embedded Qdrant. tfidf = pure-Python fallback "
-                           "(no model download).", type="enum", options=["semantic", "tfidf"]),
+    # --- Knowledge base → Embeddings (pluggable: local default, bring-your-own
+    #     API endpoint, or the zero-dependency tfidf fallback) ---
+    "rag_embeddings": Spec("knowledge", "Embedding engine",
+                           "local = built-in fastembed, free, runs on this machine (default). "
+                           "api = your own OpenAI-compatible /embeddings endpoint — OpenAI, Gemini, "
+                           "Voyage, or a local Ollama/LM Studio server. tfidf = pure-Python keyword "
+                           "matching, no downloads. After switching, re-index repos (Repos → Reindex).",
+                           type="enum", options=["semantic", "api", "tfidf"],
+                           section="Embeddings"),
+    "embedding_model": Spec("knowledge", "Embedding model",
+                            "For 'semantic': a fastembed model id (default BAAI/bge-small-en-v1.5). "
+                            "For 'api': the endpoint's model id, e.g. text-embedding-3-small (OpenAI) "
+                            "or nomic-embed-text (Ollama).", section="Embeddings",
+                            show_if="rag_embeddings=semantic|api"),
+    "embedding_api_base_url": Spec("knowledge", "Embeddings API base URL",
+                                   "e.g. https://api.openai.com/v1, or "
+                                   "http://localhost:11434/v1 for local Ollama.",
+                                   section="Embeddings", show_if="rag_embeddings=api"),
+    "embedding_api_key": Spec("knowledge", "Embeddings API key",
+                              "Leave empty for local servers (Ollama/LM Studio) "
+                              "that don't need one.", secret=True, section="Embeddings",
+                              show_if="rag_embeddings=api"),
     "generate_knowledge": Spec("knowledge", "Structured knowledge views",
                                "Analyze each repo into architecture/module/feature views the PM scopes "
                                "against (LLM cost on ingest).", type="bool"),
@@ -149,9 +201,9 @@ FIELDS: dict[str, Spec] = {
                       "Safe default: the pipeline never pushes branches or opens real PRs — it logs "
                       "what it would do. Turn off only against a repo you own.", type="bool"),
     "open_real_pr": Spec("delivery", "Open real PRs",
-                         "Open a PR via the gh CLI at the end of the pipeline (ignored while demo "
-                         "mode is on). Off = deliveries wait for the Create PR button on the board.",
-                         type="bool"),
+                         "Open a PR via the gh CLI at the end of the pipeline. Off = deliveries "
+                         "wait for the Create PR button on the board.",
+                         type="bool", show_if="demo_mode=false"),
     "agent_git_name": Spec("delivery", "Agent commit name",
                            "Author name on every commit the pipeline makes — the history shows the "
                            "agent, not the server's git config."),
@@ -161,7 +213,8 @@ FIELDS: dict[str, Spec] = {
     "github_bot_token": Spec("delivery", "GitHub bot token",
                              "Token of a dedicated bot/machine account. When set, pushes and PR "
                              "creation authenticate as that account, so PRs are created BY the "
-                             "agent on GitHub. Empty = the host's gh login opens them.", secret=True),
+                             "agent on GitHub. Empty = the host's gh login opens them.", secret=True,
+                             show_if="demo_mode=false"),
 
     # --- Jira (optional) ---
     "jira_base_url": Spec("jira", "Jira base URL", "e.g. https://your-org.atlassian.net"),
@@ -171,10 +224,10 @@ FIELDS: dict[str, Spec] = {
 }
 
 GROUPS: list[tuple[str, str, str]] = [
-    ("providers", "Providers & keys", "LLM endpoints and credentials. Keys are stored encrypted, "
-                                      "locally, and never shown back."),
-    ("models", "Agent models", "Which provider + model runs each stage of the pipeline. Use the "
-                               "preset to point every stage at one provider."),
+    ("providers", "Connections", "Connect your LLM providers and agentic coding CLIs. Keys are "
+                                 "encrypted, stored locally, and never shown back."),
+    ("models", "Agent models", "Assign a provider + model to each pipeline stage. Use the preset "
+                               "to point every stage at one provider in a click."),
     ("pipeline", "Pipeline limits", "Loop bounds and request budgets."),
     ("knowledge", "Knowledge base", "How repositories are indexed and kept fresh."),
     ("delivery", "Delivery & safety", "What the pipeline is allowed to do to real repositories."),
@@ -266,15 +319,28 @@ def apply_provider_preset(db: Session, provider_id: str) -> list[str]:
 
 
 def _providers_view() -> list[dict]:
-    """Registry for the UI: dependent provider→model dropdowns + key status."""
+    """Registry for the UI: dependent provider→model dropdowns + key status.
+    Agent-CLI providers additionally carry live availability (installed? which
+    version?) so the stage dropdowns can mark tools that can't run here."""
+    from . import agent_backends  # local import — avoids a cycle at module load
+
+    avail = agent_backends.availability()
     out = []
     for pid, p in providers.PROVIDERS.items():
-        out.append({
+        entry = {
             "id": pid, "name": p.name, "kind": p.kind, "note": p.note,
             "models": list(p.models), "default_model": p.default_model,
             "key_field": p.key_field, "base_url_field": p.base_url_field,
-            "key_set": providers.has_key(pid),
-        })
+            "path_field": p.path_field, "key_set": providers.has_key(pid),
+        }
+        if p.backend:
+            det = avail.get(p.backend, {"available": False, "version": "",
+                                        "reason": "unknown backend"})
+            entry.update(backend=p.backend, available=det["available"],
+                         version=det["version"], unavailable_reason=det["reason"],
+                         connect_hint=det.get("connect_hint", ""),
+                         installable=det.get("installable", False))
+        out.append(entry)
     return out
 
 
@@ -294,6 +360,7 @@ def view() -> dict:
                 "min": spec.min, "max": spec.max, "value": value,
                 "set": bool(raw) if spec.secret else None,
                 "provider_field": spec.provider_field, "model_field": spec.model_field,
+                "section": spec.section, "show_if": spec.show_if,
             })
         groups.append({"id": gid, "label": label, "help": help_text, "fields": fields})
     return {

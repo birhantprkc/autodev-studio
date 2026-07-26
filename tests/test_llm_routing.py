@@ -24,8 +24,14 @@ def spy_transports(monkeypatch):
             return {"text": "", "tokens_in": 0, "tokens_out": 0, "cost": 0.0, "error": None}
         return _fn
 
+    def agent_chat(backend_id, *args, **kwargs):
+        calls["hit"] = "agent"
+        calls["backend"] = backend_id
+        calls["model"] = kwargs.get("model")
+        return {"text": "", "tokens_in": 0, "tokens_out": 0, "cost": 0.0, "error": None}
+
     monkeypatch.setattr(llm.anthropic_api, "chat", make("anthropic"))
-    monkeypatch.setattr(llm.claude_agent, "chat", make("claude-cli"))
+    monkeypatch.setattr(llm.agent_backends, "chat", agent_chat)
     monkeypatch.setattr(llm.openai_agent, "chat", make("openai"))
     return calls
 
@@ -39,12 +45,23 @@ def spy_transports(monkeypatch):
         ("xai", "openai"),
         ("custom", "openai"),
         ("anthropic", "anthropic"),
-        ("claude-cli", "claude-cli"),
+        ("claude-cli", "agent"),
+        ("codex", "agent"),
+        ("cursor-cli", "agent"),
+        ("aider", "agent"),
+        ("gemini-cli", "agent"),
     ],
 )
 def test_chat_routes_by_provider_kind(spy_transports, provider, expected_transport):
     llm.chat("sys", "user", provider=provider, model="some-model")
     assert spy_transports["hit"] == expected_transport
+
+
+def test_agent_chat_receives_the_adapter_id(spy_transports):
+    llm.chat("sys", "user", provider="claude-cli", model="sonnet")
+    assert spy_transports["backend"] == "claude-code"
+    llm.chat("sys", "user", provider="codex", model="gpt-5.1-codex")
+    assert spy_transports["backend"] == "codex"
 
 
 def test_openai_kind_forwards_provider_and_model(spy_transports):

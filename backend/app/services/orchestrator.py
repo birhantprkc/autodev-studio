@@ -1,14 +1,15 @@
-"""Real agent pipeline: Dev (Claude) → QA (OpenAI) → Review (Claude) → PR (gh).
+"""Real agent pipeline: Dev → QA → Review → PR (gh).
 
-Runs on a cloned working copy branch. Dev edits + commits; QA runs tests and gets
-an unbiased OpenAI review; Review is a Claude pass over the diff; PR pushes the
-branch and opens a real PR via gh. The task is left in the `pr` column for a human
-to merge.
+Runs on a cloned working copy branch. Dev edits (via whichever agent backend the
+stage is pointed at — Claude Code, Codex, Cursor, Aider, Gemini CLI, or an HTTP
+coding loop); QA runs tests and an unbiased chat review; Review is a separate
+agent pass over the diff (deliberately selectable on a different backend/model
+family than Dev); PR pushes the branch and opens a real PR via gh. The task is
+left in the `pr` column for a human to merge.
 """
 
 import logging
 import re
-import shutil
 import time
 from pathlib import Path
 
@@ -18,8 +19,8 @@ from ..config import settings
 from ..database import engine
 from ..models import Repo, ScopeSession, Task, TaskStatus, utcnow
 from . import (
+    agent_backends,
     agent_runner,
-    claude_agent,
     deepwiki,
     git_ops,
     llm,
@@ -37,10 +38,27 @@ _CLI_ALIASES = {"sonnet", "opus", "haiku", "default"}
 
 
 def _review_label(provider: str) -> str:
-    if providers.is_cli(provider):
+    if providers.agent_backend(provider) == "claude-code":
         m = settings.review_model if settings.review_model in _CLI_ALIASES else settings.claude_model
         return f"claude-cli {m}"
     return providers.label(provider, settings.review_model)
+
+
+def _agent_label(provider: str, model: str | None) -> str:
+    """Run-row label for an agent-backend provider ('auto'/'anthropic' show as
+    the claude-cli they resolve to)."""
+    if providers.agent_backend(provider) == "claude-code":
+        return f"claude-cli {model or settings.claude_model}"
+    return providers.label(provider, model or "")
+
+
+def _agent_model(provider: str, backend: str, configured: str) -> str | None:
+    """Model to hand an agent backend: for the Claude CLI only its aliases are
+    valid; other backends take the configured model id (or their default)."""
+    if backend == "claude-code":
+        return configured if configured in _CLI_ALIASES else None
+    p = providers.PROVIDERS.get(provider)
+    return (configured or "").strip() or (p.default_model if p else "") or None
 
 
 def _qa_label() -> str:
@@ -237,45 +255,53 @@ def _is_transient(err: str) -> bool:
                                   "timeout", "529", "500", "connection", "network"))
 
 
-def _claude_unavailable(err: str) -> bool:
-    """True only when the Claude CLI can't run AT ALL on this machine (missing
-    binary or unauthenticated) — the only case where degrading to the free-tier
-    coding loop beats failing visibly."""
-    if shutil.which(settings.claude_cli_path) is None:
+def _backend_unavailable(backend: str, err: str) -> bool:
+    """True only when the agent backend can't run AT ALL on this machine (missing
+    binary, no headless mode, or unauthenticated) — the only case where degrading
+    to the HTTP coding loop beats failing visibly."""
+    if not agent_backends.is_available(backend):
         return True
     low = (err or "").lower()
     return any(k in low for k in ("not runnable", "login", "authent", "api key",
-                                  "credit balance", "billing"))
+                                  "credit balance", "billing", "unknown agent backend",
+                                  "no scriptable", "headless"))
 
 
 def _dev_agent(path: str, key: str, info: dict, on_event, context: str = "",
                test_cmd: str = "") -> tuple[dict, str]:
-    """Run the Dev coding agent. When dev_provider is the Claude CLI (or 'auto'),
-    run the agentic CLI; 'auto' additionally falls back to the OpenAI coding loop
-    when Claude can't authenticate. A concrete OpenAI-compatible provider runs the
-    SEARCH/REPLACE loop on that provider. Returns (result, model_label)."""
+    """Run the Dev coding agent. When dev_provider maps to an agent backend
+    (Claude CLI, Codex, Cursor, Aider, Gemini CLI, or 'auto'), run that headless
+    CLI; a backend that can't run at all on this machine falls back to the HTTP
+    coding loop instead of failing the scope. A concrete OpenAI-compatible
+    provider runs the SEARCH/REPLACE loop on that provider.
+    Returns (result, model_label)."""
     provider = settings.dev_provider
-    if providers.is_cli(provider):  # auto | claude-cli | anthropic
-        model = _cli_dev_model(info)
-        on_event("info", f"Dev model: claude-cli {model}")
+    backend = providers.agent_backend(provider)
+    if backend:
+        model = _cli_dev_model(info) if backend == "claude-code" \
+            else _agent_model(provider, backend, settings.dev_model)
+        label = _agent_label(provider, model)
+        on_event("info", f"Dev model: {label}")
         prompt = prompts.dev(key, info["title"], info["description"], info["criteria"], context,
                              affected_files=info.get("affected_files"),
                              target_symbols=info.get("target_symbols"),
                              test_cmd=test_cmd,
                              verified=_verified_locations(path, info.get("affected_files"),
                                                           info.get("target_symbols")))
-        res = claude_agent.run_claude(path, prompt, on_event, model=model)
+        res = agent_backends.run(backend, path, prompt, on_event, model=model)
         if res["error"] and _is_transient(res["error"]):
-            # Overload/rate-limit/timeout: retry Claude once. NEVER hand transient
-            # failures to the free-tier coder — it produces broken edits (proven
-            # in the run logs), which is worse than failing loudly.
-            on_event("warn", f"Claude transient error ({res['error'][:80]}) — retrying once")
+            # Overload/rate-limit/timeout: retry the same backend once. NEVER hand
+            # transient failures to the free-tier coder — it produces broken edits
+            # (proven in the run logs), which is worse than failing loudly.
+            on_event("warn", f"{backend} transient error ({res['error'][:80]}) — retrying once")
             time.sleep(15)
-            res = claude_agent.run_claude(path, prompt, on_event, model=model)
-        # Only 'auto' degrades to the HTTP coder, and only when Claude can't run at all.
-        if not res["error"] or provider != "auto" or not _claude_unavailable(res["error"]):
-            return res, f"claude-cli {model}"
-        on_event("warn", f"Claude unavailable ({(res['error'] or '')[:50]}…) — falling back to OpenAI coding agent")
+            res = agent_backends.run(backend, path, prompt, on_event, model=model)
+        # Fail open: degrade to the HTTP coder only when the backend can't run at
+        # all (not installed / no headless mode / unauthenticated).
+        if not res["error"] or not _backend_unavailable(backend, res["error"]):
+            return res, label
+        on_event("warn", f"{backend} unavailable ({(res['error'] or '')[:50]}…) — "
+                         "falling back to the HTTP coding agent")
         fb_provider, fb_model = _auto_http_target()
     else:
         fb_provider, fb_model = provider, settings.dev_model
@@ -295,10 +321,11 @@ def _inconclusive(res: dict) -> bool:
 
 def _review_once(path: str, key: str, criteria: list, diff: str, on_event) -> tuple[dict, str]:
     provider = settings.review_provider  # separate from Dev — unbiased reviewer
-    if providers.is_cli(provider):  # claude-cli | anthropic → the Claude CLI reviews
-        cli_model = settings.review_model if settings.review_model in _CLI_ALIASES else None
-        res = claude_agent.run_claude(path, prompts.review(key, criteria, diff), on_event,
-                                      model=cli_model)
+    backend = providers.agent_backend(provider)
+    if backend:  # any agentic CLI can review — cross-provider vs Dev by config
+        model = _agent_model(provider, backend, settings.review_model)
+        res = agent_backends.run(backend, path, prompts.review(key, criteria, diff), on_event,
+                                 model=model)
         return res, provider
     r = llm.chat(prompts.REVIEW_SYSTEM, prompts.review(key, criteria, diff),
                  provider=provider, model=settings.review_model)
@@ -374,17 +401,22 @@ def _dev_revise(path: str, key: str, title: str, criteria: list, review_text: st
     provider = settings.dev_provider
     prompt = prompts.revise(key, title, criteria, review_text, qa_text, context, test_cmd=test_cmd,
                             verified=_verified_locations(path, affected_files, target_symbols))
-    if providers.is_cli(provider):  # auto | claude-cli | anthropic
-        model = settings.dev_model if settings.dev_model in _CLI_ALIASES else settings.claude_model
-        on_event("info", f"Dev model: claude-cli {model} (revision)")
-        res = claude_agent.run_claude(path, prompt, on_event, model=model)
+    backend = providers.agent_backend(provider)
+    if backend:
+        if backend == "claude-code":
+            model = settings.dev_model if settings.dev_model in _CLI_ALIASES else settings.claude_model
+        else:
+            model = _agent_model(provider, backend, settings.dev_model)
+        label = _agent_label(provider, model)
+        on_event("info", f"Dev model: {label} (revision)")
+        res = agent_backends.run(backend, path, prompt, on_event, model=model)
         if res["error"] and _is_transient(res["error"]):
-            on_event("warn", f"Claude transient error ({res['error'][:80]}) — retrying once")
+            on_event("warn", f"{backend} transient error ({res['error'][:80]}) — retrying once")
             time.sleep(15)
-            res = claude_agent.run_claude(path, prompt, on_event, model=model)
-        if not res["error"] or provider != "auto" or not _claude_unavailable(res["error"]):
-            return res, f"claude-cli {model}"
-        on_event("warn", "Claude unavailable — OpenAI coding agent for revision")
+            res = agent_backends.run(backend, path, prompt, on_event, model=model)
+        if not res["error"] or not _backend_unavailable(backend, res["error"]):
+            return res, label
+        on_event("warn", f"{backend} unavailable — HTTP coding agent for revision")
         fb_provider, fb_model = _auto_http_target()
     else:
         fb_provider, fb_model = provider, settings.dev_model

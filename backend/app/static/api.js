@@ -34,6 +34,9 @@ const API = {
   settings() { return this.get("/api/settings"); },
   saveSettings(values) { return this.put("/api/settings", { values }); },
   applyProviderPreset(provider) { return this.post("/api/settings/preset", { provider }); },
+  refreshBackends() { return this.post("/api/settings/backends/refresh"); },
+  installBackend(id) { return this.post(`/api/settings/backends/${id}/install`); },
+  testEmbeddings() { return this.post("/api/settings/embeddings/test"); },
 
   // overview / repos
   overview(repoId, sessionId) { const q = sessionId ? `?session_id=${sessionId}` : (repoId ? `?repo_id=${repoId}` : ""); return this.get("/overview" + q); },

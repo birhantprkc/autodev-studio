@@ -97,9 +97,14 @@ def get_dev_detail(run_id: int, db: Session = Depends(get_session)) -> dict:
 
     dur = f"{run.duration_ms / 1000:.1f}s" if run.duration_ms else ("running" if run.status == "running" else "—")
     done_stages = sum(1 for s in stage_runs.values() if s == "completed")
+    unknown = bool(getattr(run, "usage_unknown", False))
     metrics = [
-        {"label": "Tokens", "value": f"{run.tokens_input + run.tokens_output:,}", "sub": "in+out"},
-        {"label": "Cost", "value": f"${run.cost_usd:.2f}", "sub": run.agent_type},
+        {"label": "Tokens",
+         "value": "unknown" if unknown and not (run.tokens_input + run.tokens_output)
+         else f"{run.tokens_input + run.tokens_output:,}", "sub": "in+out"},
+        {"label": "Cost",
+         "value": "unknown" if unknown and not run.cost_usd else f"${run.cost_usd:.2f}",
+         "sub": run.agent_type},
         {"label": "Duration", "value": dur, "sub": run.status},
         {"label": "Lines Changed", "value": f"+{ins} −{dels}", "sub": "vs base"},
     ]

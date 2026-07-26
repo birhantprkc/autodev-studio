@@ -68,3 +68,33 @@ def test_view_masks_secrets(db):
     view = rs.view()
     blob = str(view)
     assert "sk-should-be-hidden" not in blob
+
+
+def test_view_exposes_show_if_gates():
+    """Mutually-exclusive fields carry their visibility condition so the UI can
+    hide them when the driver field says they don't apply."""
+    v = rs.view()
+    fields = {f["name"]: f for g in v["groups"] for f in g["fields"]}
+    assert fields["embedding_api_base_url"]["show_if"] == "rag_embeddings=api"
+    assert fields["embedding_api_key"]["show_if"] == "rag_embeddings=api"
+    assert fields["embedding_model"]["show_if"] == "rag_embeddings=semantic|api"
+    assert fields["open_real_pr"]["show_if"] == "demo_mode=false"
+    assert fields["github_bot_token"]["show_if"] == "demo_mode=false"
+    # Ungated fields explicitly carry no condition.
+    assert fields["demo_mode"]["show_if"] == ""
+
+
+def test_view_providers_carry_card_wiring():
+    """The Connections cards need each provider's key/url/path field names, and
+    every stage-selectable provider a non-empty model catalog or free-text."""
+    v = rs.view()
+    provs = {p["id"]: p for p in v["providers"]}
+    assert provs["codex"]["path_field"] == "codex_cli_path"
+    assert provs["cursor-cli"]["path_field"] == "cursor_cli_path"
+    assert provs["groq"]["key_field"] == "groq_api_key"
+    # Model dropdowns: every provider offers a catalog except the free-text ones.
+    for pid, p in provs.items():
+        if pid in ("custom", "antigravity"):
+            assert p["models"] == []
+        else:
+            assert p["models"], f"{pid} has an empty model catalog"

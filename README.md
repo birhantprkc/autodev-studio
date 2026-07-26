@@ -106,7 +106,7 @@ which is to say, most of what a team actually does.
 | **Agentic PM scoping** | A PM agent runs a Socratic clarify-loop, hunting for ambiguity before locking a scope, then drafts concrete engineering tickets. |
 | **Human approval gate** | No agent touches code until a human approves the ticket (optionally pushed to Jira). |
 | **Dev → QA → Review → PR pipeline** | Runs on an isolated branch of a cloned working copy; opens a real PR via `gh`. |
-| **Provider- & model-agnostic** | Every pipeline stage picks its own provider *and* model, live from the UI. Native support for the **Anthropic Messages API**, the **Claude Code CLI**, and **any OpenAI-compatible endpoint** — Groq, OpenAI, Gemini, xAI, OpenRouter, Together, DeepSeek, a local Ollama, whatever. Routing is by provider *kind*, not guessed from the model name. |
+| **Provider- & model-agnostic** | Every pipeline stage picks its own provider *and* model, live from the UI. Dev/Review can run **five agentic coding CLIs** — Claude Code, Codex, Cursor, Aider, Gemini CLI (each via its own login, no API key) — or any API model: the **Anthropic Messages API** and **any OpenAI-compatible endpoint** (Groq, OpenAI, Gemini, xAI, OpenRouter, Together, DeepSeek, a local Ollama). One-click install for a missing CLI, right from Settings. |
 | **Cross-provider review** | The model that *writes* the code is deliberately a different family than the one that *reviews* it, to decorrelate blind spots. |
 | **Bounded revise loop** | QA/Review feedback is fed back to Dev for up to N rounds, with conservative verdict parsing. |
 | **Live board + cost meter** | Kanban lanes, streamed agent logs, and real token/cost breakdowns per ticket, scope, and agent. |
@@ -201,6 +201,21 @@ usable by more than its author:
 - **Grounded, not hallucinated.** The structured views take their *facts* from static
   analysis and let the LLM supply only interpretation — so the map the agents
   navigate by is anchored to the real code.
+
+### Mix providers per stage — the part skills can't do
+
+Adding skills or subagents to a coding agent is useful, but that agent still runs **one
+vendor's model everywhere.** Here **every stage picks its own provider and model**, set live
+from the UI — and Dev/Review can be **any headless coding CLI** (Claude Code, Codex, Cursor,
+Aider, Gemini CLI) *or* any API model. So Claude can plan, Codex can code, and GPT can review.
+
+**No API keys required for the CLIs** — they sign in with their own login, so you plug in your
+existing **Claude Code** or **Codex / ChatGPT** subscription and run the whole pipeline on
+plans you already pay for, not metered API billing.
+
+It matters most at review: LLM-as-judge research shows a model tends to favor its *own* output
+(self-preference bias), so the reviewer is deliberately a **different model family** than the
+author — a cross-check a single-vendor skill setup structurally can't give you.
 
 ### Keeping the knowledge base fresh, cheaply
 

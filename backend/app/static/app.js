@@ -837,7 +837,12 @@ async function refreshLog(runId, keyById) {
   if (stick) logBox.parentElement.scrollTop = logBox.parentElement.scrollHeight;
   const [bcls, blabel] = RUN_BADGE[run.status] || RUN_BADGE.queued;
   $("#log-status").innerHTML = `<span class="badge ${bcls}">${blabel}</span>`;
-  setText("log-cost", `${fmtCost(run.cost_usd)} · ${fmtTok(run.tokens_input + run.tokens_output)} tok`);
+  // Backends that don't report usage are flagged usage_unknown — show that
+  // honestly instead of a fake $0.00 / 0 tok.
+  const costStr = run.usage_unknown && !run.cost_usd ? "cost unknown" : fmtCost(run.cost_usd);
+  const tokStr = run.usage_unknown && !(run.tokens_input + run.tokens_output)
+    ? "tok unknown" : `${fmtTok(run.tokens_input + run.tokens_output)} tok`;
+  setText("log-cost", `${costStr} · ${tokStr}`);
 }
 
 // --- Page: Knowledge -----------------------------------------------------------
@@ -1074,6 +1079,36 @@ function markDirty(name, value) {
   SETTINGS_STATE.dirty[name] = value;
   const save = $("#settings-save");
   save.hidden = Object.keys(SETTINGS_STATE.dirty).length === 0;
+  refreshGates(); // dependent fields show/hide as their driver changes
+}
+
+// --- Conditional visibility ("show_if": "field=value|value2") -----------------
+// Fields that only make sense in one mode are hidden in the others, live.
+let GATED_ROWS = [];
+
+function _fieldByName(name) {
+  for (const g of (SETTINGS_STATE.view?.groups || [])) {
+    for (const f of g.fields) if (f.name === name) return f;
+  }
+  return null;
+}
+
+function gateSatisfied(showIf) {
+  if (!showIf) return true;
+  const [drv, vals] = showIf.split("=");
+  const f = _fieldByName(drv);
+  const cur = _settingsPending(drv, f ? f.value : undefined);
+  return vals.split("|").includes(String(cur));
+}
+
+function registerGate(el, f) {
+  if (!f.show_if) return;
+  GATED_ROWS.push({ el, show_if: f.show_if });
+  el.hidden = !gateSatisfied(f.show_if);
+}
+
+function refreshGates() {
+  for (const g of GATED_ROWS) g.el.hidden = !gateSatisfied(g.show_if);
 }
 
 async function saveSettings() {
@@ -1095,17 +1130,48 @@ function _settingsPending(name, fallback) {
   return name in SETTINGS_STATE.dirty ? SETTINGS_STATE.dirty[name] : fallback;
 }
 
-// One datalist per provider id, so a model input suggests only that provider's models.
-function ensureProviderDatalists(provs) {
-  for (const p of provs) {
-    const listId = `mc-${p.id}`;
-    let dl = document.getElementById(listId);
-    if (!dl) { dl = document.createElement("datalist"); dl.id = listId; document.body.appendChild(dl); }
-    dl.innerHTML = (p.models || []).map((m) => `<option value="${esc(m)}"></option>`).join("");
-  }
+// Option label/state for a provider id: agent-CLI backends that aren't installed
+// (or have no headless mode) are shown but not selectable.
+function providerOption(o, cur, provsById) {
+  const p = provsById[o];
+  const unavailable = p && p.backend && p.available === false;
+  const label = unavailable ? `${o} — unavailable` : o;
+  const title = unavailable ? p.unavailable_reason || "" : (p && p.version) || "";
+  return `<option value="${esc(o)}" ${o === cur ? "selected" : ""}
+    ${unavailable && o !== cur ? "disabled" : ""} title="${esc(title)}">${esc(label)}</option>`;
 }
 
-// A stage row: provider <select> + model <input> whose suggestions follow the provider.
+// Model control for a stage: a real dropdown of the provider's catalog (visible
+// options — not a type-to-see datalist), with "Custom model…" swapping to free
+// text. Providers with an empty catalog (custom endpoint) get the text input.
+function buildModelControl(mf, prov, curModel) {
+  const models = (prov && prov.models) || [];
+  const textInput = () => {
+    const inp = node(`<input class="input mono" type="text" value="${esc(String(curModel ?? ""))}"
+        placeholder="model id" ${IS_ADMIN ? "" : "disabled"}/>`);
+    inp.addEventListener("input", (e) => markDirty(mf.name, e.target.value));
+    return inp;
+  };
+  if (!models.length) return textInput();
+  const opts = [...models];
+  if (curModel && !opts.includes(curModel)) opts.unshift(curModel);
+  const placeholder = curModel ? "" : `<option value="" selected disabled>choose a model…</option>`;
+  const sel = node(`<select class="select mono" ${IS_ADMIN ? "" : "disabled"}>${placeholder}${
+    opts.map((m) => `<option value="${esc(m)}" ${m === curModel ? "selected" : ""}>${esc(m)}</option>`).join("")
+  }<option value="__custom__">Custom model…</option></select>`);
+  sel.addEventListener("change", (e) => {
+    if (e.target.value === "__custom__") {
+      const inp = textInput();
+      sel.replaceWith(inp);
+      inp.focus();
+    } else {
+      markDirty(mf.name, e.target.value);
+    }
+  });
+  return sel;
+}
+
+// A stage row: provider <select> + model dropdown that follows the provider.
 function buildStageRow(pf, mf, provsById) {
   const curProvider = _settingsPending(pf.name, pf.value);
   const curModel = _settingsPending(mf.name, mf.value);
@@ -1118,20 +1184,21 @@ function buildStageRow(pf, mf, provsById) {
       <div class="s-control s-control-stage"></div>
     </div>`);
   const ctl = row.querySelector(".s-control");
-  const input = node(`<input class="input mono" type="text" list="mc-${esc(curProvider)}"
-      value="${esc(String(curModel ?? ""))}" placeholder="model id" ${IS_ADMIN ? "" : "disabled"}/>`);
-  input.addEventListener("input", (e) => markDirty(mf.name, e.target.value));
+  let modelCtl = buildModelControl(mf, provsById[curProvider], curModel);
   const sel = node(`<select class="select" ${IS_ADMIN ? "" : "disabled"}>${pf.options.map((o) =>
-      `<option value="${esc(o)}" ${o === curProvider ? "selected" : ""}>${esc(o)}</option>`).join("")}</select>`);
+      providerOption(o, curProvider, provsById)).join("")}</select>`);
   sel.addEventListener("change", (e) => {
     const val = e.target.value;
     markDirty(pf.name, val);
-    input.setAttribute("list", `mc-${val}`);
     const p = provsById[val];
-    if (p && p.default_model) { input.value = p.default_model; markDirty(mf.name, p.default_model); }
+    const next = (p && p.default_model) || "";
+    if (next) markDirty(mf.name, next);
+    const fresh = buildModelControl(mf, p, next);
+    modelCtl.replaceWith(fresh);
+    modelCtl = fresh;
   });
   ctl.appendChild(sel);
-  ctl.appendChild(input);
+  ctl.appendChild(modelCtl);
   return row;
 }
 
@@ -1170,7 +1237,19 @@ function buildSettingRow(f) {
       <div class="s-control"></div>
     </div>`);
   row.querySelector(".s-control").appendChild(buildSettingControl(f));
+  registerGate(row, f);
   return row;
+}
+
+// Compact field for the provider cards: label above control, full width.
+function buildCardField(f) {
+  const wrap = node(`<div class="field prov-field">
+    <label>${esc(f.label)}${f.secret && f.set ? ` <span class="badge badge-ok">set</span>` : ""}</label>
+  </div>`);
+  wrap.appendChild(buildSettingControl(f));
+  if (f.help) wrap.appendChild(node(`<div class="small faint" style="margin-top:3px">${esc(f.help)}</div>`));
+  registerGate(wrap, f);
+  return wrap;
 }
 
 function buildPresetRow(view) {
@@ -1202,6 +1281,122 @@ async function applyPreset(providerId, btn) {
   btn.disabled = false;
 }
 
+// --- Connections tab: one card per provider ------------------------------------
+// API providers show their key/URL; agentic CLIs show live install status with
+// one-click Install / Re-check. A field appears on exactly ONE card (shared keys
+// like the Anthropic key render once, other users of it point there).
+
+function buildApiProviderCard(p, byName, claimed) {
+  const badge = !p.key_field ? ""
+    : p.key_set ? `<span class="badge badge-ok">key set</span>`
+    : `<span class="badge">no key</span>`;
+  const card = node(`<div class="card prov-card">
+    <div class="row prov-head">
+      <span class="prov-name">${esc(p.name)}</span><span class="grow"></span>${badge}
+    </div>
+    ${p.note ? `<div class="small faint prov-note">${esc(p.note)}</div>` : ""}</div>`);
+  for (const fname of [p.base_url_field, p.key_field]) {
+    const f = fname && byName[fname];
+    if (!f || claimed.has(fname)) continue;
+    claimed.add(fname);
+    card.appendChild(buildCardField(f));
+  }
+  return card;
+}
+
+function buildCliProviderCard(p, byName, claimed) {
+  const badge = p.available
+    ? `<span class="badge badge-ok">installed</span>`
+    : `<span class="badge">not installed</span>`;
+  const detail = p.available ? (p.version || "") : (p.unavailable_reason || "");
+  const installBtn = !p.available && p.installable && IS_ADMIN
+    ? `<button class="btn btn-sm" data-install="${esc(p.backend)}">Install</button>` : "";
+  const card = node(`<div class="card prov-card">
+    <div class="row prov-head">
+      <span class="prov-name">${esc(p.name)}</span><span class="grow"></span>${badge}${installBtn}
+    </div>
+    <div class="small faint mono prov-note">${esc(detail)}</div>
+    ${!p.available && p.connect_hint
+      ? `<div class="small faint prov-note">→ ${esc(p.connect_hint)}</div>` : ""}</div>`);
+  // The CLI's own key (e.g. Cursor); shared keys just point at their card.
+  const kf = p.key_field && byName[p.key_field];
+  if (kf && !claimed.has(p.key_field)) {
+    claimed.add(p.key_field);
+    card.appendChild(buildCardField(kf));
+  } else if (p.key_field) {
+    card.appendChild(node(`<div class="small faint prov-note">Uses the
+      ${esc((byName[p.key_field] || { label: p.key_field }).label)} from “API providers” above,
+      or the tool's own login.</div>`));
+  }
+  // Binary path is an edge-case tweak — folded away so cards stay clean.
+  const pf = p.path_field && byName[p.path_field];
+  if (pf && !claimed.has(p.path_field)) {
+    claimed.add(p.path_field);
+    const det = node(`<details class="prov-adv"><summary class="small faint">Advanced</summary></details>`);
+    det.appendChild(buildCardField(pf));
+    card.appendChild(det);
+  }
+  return card;
+}
+
+function renderConnectionsTab(host, view, group) {
+  const byName = Object.fromEntries(group.fields.map((f) => [f.name, f]));
+  const claimed = new Set();
+  const apis = (view.providers || []).filter((p) => !p.backend);
+  const clis = (view.providers || []).filter((p) => p.backend);
+
+  host.appendChild(node(`<div class="settings-section-head">Agentic coding CLIs</div>`));
+  const cliHead = node(`<div class="row" style="margin:2px 2px 8px">
+    <span class="small faint grow">Auto-detected on this host — any pipeline stage can use any
+    installed tool. Install runs the tool's official installer.</span>
+    <button class="btn btn-sm" id="backends-recheck">Re-check</button></div>`);
+  host.appendChild(cliHead);
+  const cliGrid = node(`<div class="prov-grid"></div>`);
+  for (const p of clis) cliGrid.appendChild(buildCliProviderCard(p, byName, claimed));
+  host.appendChild(cliGrid);
+  host.appendChild(node(`<div class="small faint mono" id="backend-install-out" hidden
+      style="white-space:pre-wrap; max-height:140px; overflow:auto; margin-top:8px"></div>`));
+
+  host.appendChild(node(`<div class="settings-section-head">API providers</div>`));
+  const apiGrid = node(`<div class="prov-grid"></div>`);
+  for (const p of apis) apiGrid.appendChild(buildApiProviderCard(p, byName, claimed));
+  host.appendChild(apiGrid);
+
+  // Safety net: any provider-tab field no card claimed still gets rendered.
+  const leftovers = group.fields.filter((f) => !claimed.has(f.name));
+  if (leftovers.length) {
+    const card = node(`<div class="card" style="margin-top:12px"></div>`);
+    for (const f of leftovers) card.appendChild(buildSettingRow(f));
+    host.appendChild(card);
+  }
+
+  host.querySelector("#backends-recheck").addEventListener("click", async (e) => {
+    e.currentTarget.disabled = true;
+    try {
+      SETTINGS_STATE.view = await API.refreshBackends();
+      showSettingsTab(SETTINGS_STATE.tab);
+      toast("Backends re-checked");
+    } catch (err) { toast(err.message, true); e.currentTarget.disabled = false; }
+  });
+  host.querySelectorAll("[data-install]").forEach((btn) => btn.addEventListener("click", async (e) => {
+    const id = e.currentTarget.dataset.install;
+    e.currentTarget.disabled = true;
+    e.currentTarget.textContent = "Installing…";
+    toast(`Installing ${id} — this can take a minute`);
+    try {
+      const v = await API.installBackend(id);
+      SETTINGS_STATE.view = v;
+      const r = v.install || {};
+      showSettingsTab(SETTINGS_STATE.tab);
+      toast(r.ok ? `${id} installed` : `${id} install failed — see output below`, !r.ok);
+      if (!r.ok && r.output) {
+        const out = $("#backend-install-out");
+        if (out) { out.hidden = false; out.textContent = r.output; }
+      }
+    } catch (err) { toast(err.message, true); showSettingsTab(SETTINGS_STATE.tab); }
+  }));
+}
+
 function showSettingsTab(id) {
   SETTINGS_STATE.tab = id;
   $$("#settings-tabs .tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === id));
@@ -1211,25 +1406,70 @@ function showSettingsTab(id) {
   const view = SETTINGS_STATE.view;
   const group = view.groups.find((g) => g.id === id);
   const provsById = Object.fromEntries((view.providers || []).map((p) => [p.id, p]));
-  ensureProviderDatalists(view.providers || []);
+  GATED_ROWS = []; // visibility gates re-register on every render
   host.innerHTML = "";
   host.appendChild(node(`<p class="small faint" style="margin:0 2px 2px; line-height:1.5">${esc(group.help)}${IS_ADMIN ? "" : " — read-only (admin role required to edit)"}</p>`));
 
+  if (id === "providers") { renderConnectionsTab(host, view, group); return; }
   if (id === "models") host.appendChild(buildPresetRow(view));
 
   const byName = Object.fromEntries(group.fields.map((f) => [f.name, f]));
   const consumed = new Set();
-  const card = node(`<div class="card"></div>`);
+
+  // Group fields by their section (in declared order) so each subsection gets its
+  // own heading + card — turns a long flat list into scannable groups.
+  const sections = [];
   for (const f of group.fields) {
-    if (consumed.has(f.name)) continue;
-    if (f.type === "provider" && f.model_field && byName[f.model_field]) {
-      consumed.add(f.model_field);
-      card.appendChild(buildStageRow(f, byName[f.model_field], provsById));
-    } else {
-      card.appendChild(buildSettingRow(f));
-    }
+    const name = f.section || "";
+    let sec = sections.find((s) => s.name === name);
+    if (!sec) { sec = { name, fields: [] }; sections.push(sec); }
+    sec.fields.push(f);
   }
-  host.appendChild(card);
+
+  for (const sec of sections) {
+    if (sec.name) host.appendChild(node(`<div class="settings-section-head">${esc(sec.name)}</div>`));
+    const card = node(`<div class="card"></div>`);
+    for (const f of sec.fields) {
+      if (consumed.has(f.name)) continue;
+      if (f.type === "provider" && f.model_field && byName[f.model_field]) {
+        consumed.add(f.model_field);
+        card.appendChild(buildStageRow(f, byName[f.model_field], provsById));
+      } else {
+        card.appendChild(buildSettingRow(f));
+      }
+    }
+    // Embeddings get a live "does my engine actually work?" probe (runs against
+    // SAVED settings — save first, then test).
+    if (id === "knowledge" && sec.name === "Embeddings") card.appendChild(buildEmbeddingsTestRow());
+    host.appendChild(card);
+  }
+}
+
+function buildEmbeddingsTestRow() {
+  const row = node(`
+    <div class="setting-row">
+      <div class="s-info">
+        <div class="s-label">Test embeddings</div>
+        <div class="s-help">Runs one tiny embed with the saved settings above (save first).
+        Confirms the local model loads, or that your API endpoint + key respond.</div>
+      </div>
+      <div class="s-control">
+        <span class="small faint mono" id="emb-test-out" style="margin-right:8px"></span>
+        <button class="btn btn-sm" id="emb-test">Test</button>
+      </div>
+    </div>`);
+  row.querySelector("#emb-test").addEventListener("click", async (e) => {
+    const out = row.querySelector("#emb-test-out");
+    e.currentTarget.disabled = true;
+    out.textContent = "testing…";
+    try {
+      const r = await API.testEmbeddings();
+      out.textContent = (r.ok ? "✓ " : "✗ ") + r.detail;
+      toast(r.ok ? "Embeddings OK" : "Embeddings test failed", !r.ok);
+    } catch (err) { out.textContent = "✗ " + err.message; toast(err.message, true); }
+    e.currentTarget.disabled = false;
+  });
+  return row;
 }
 
 async function renderAccessTab(host) {

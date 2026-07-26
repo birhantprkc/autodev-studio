@@ -44,11 +44,20 @@ class Settings(BaseSettings):
     #   "semantic" — dense embeddings via fastembed (local, no API key) stored in
     #                an embedded Qdrant vector DB. The default. Automatically
     #                falls back to "tfidf" if fastembed/qdrant aren't installed.
+    #   "api"      — any OpenAI-compatible /embeddings endpoint (OpenAI, Gemini,
+    #                Voyage, Ollama/LM Studio locally, …): bring your own base
+    #                URL + key + model. Vectors still live in embedded Qdrant.
     #   "tfidf"    — pure-Python TF-IDF + cosine (zero extra deps).
     rag_embeddings: str = "semantic"
-    # Local embedding model (fastembed). bge-small is small, fast, and free.
+    # Embedding model: a fastembed model id for "semantic" (bge-small is small,
+    # fast, and free) or the endpoint's model id for "api" (e.g.
+    # text-embedding-3-small, nomic-embed-text).
     embedding_model: str = "BAAI/bge-small-en-v1.5"
     embedding_dim: int = 384
+    # "api" embeddings endpoint (OpenAI-compatible POST {base}/embeddings).
+    # Examples: https://api.openai.com/v1 · http://localhost:11434/v1 (Ollama).
+    embedding_api_base_url: str = ""
+    embedding_api_key: str = ""
     # Embedded Qdrant storage path (per-repo collections live here; persists
     # across restarts, so a repo stays indexed without re-embedding).
     qdrant_path: str = "./.qdrant"
@@ -130,6 +139,15 @@ class Settings(BaseSettings):
     # scope's Dev pass costs well under $1; the cap stops runaway sessions.
     # 0 disables the cap.
     claude_max_budget_usd: float = 2.0
+
+    # --- Other headless coding agents (adapter registry: services/agent_backends).
+    # Each stage can point at any of these; a tool that isn't installed is shown
+    # as unavailable in Settings instead of failing a run. ---
+    codex_cli_path: str = "codex"               # OpenAI Codex CLI (`codex exec`)
+    cursor_cli_path: str = "cursor-agent"       # Cursor CLI headless agent
+    cursor_api_key: str = ""                    # else the host's `cursor-agent login`
+    aider_cli_path: str = "aider"
+    gemini_cli_path: str = "gemini"             # Google Gemini CLI
     # Dev (code-writing) agent provider: "claude" | "openai" | "auto".
     # "auto" tries Claude, then falls back to the OpenAI coding agent if the
     # Claude CLI can't authenticate.
