@@ -30,13 +30,18 @@ class GeminiCliBackend(AgentBackend):
         env = os.environ.copy()
         if settings.gemini_api_key:
             env.setdefault("GEMINI_API_KEY", settings.gemini_api_key)
+        # Gemini CLI 0.52+ refuses to run in an "untrusted" folder and exits 55
+        # in headless mode. We drive it in isolated agent workspaces, so opt in.
+        env["GEMINI_CLI_TRUST_WORKSPACE"] = "true"
         return env
 
     def run(self, cwd: str, prompt: str, on_event: Event, *,
             model: str | None = None, timeout: int = 1800) -> dict:
         result = new_result()
         exe = self.resolve() or self.executable()
-        cmd = [exe, "--output-format", "json", "--yolo"]
+        # --skip-trust: same trust bypass as the env var above (belt-and-suspenders
+        # across Gemini CLI versions) — without it a non-interactive run aborts 55.
+        cmd = [exe, "--output-format", "json", "--yolo", "--skip-trust"]
         if model:
             cmd += ["--model", model]
 

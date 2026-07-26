@@ -47,6 +47,15 @@ def apply_preset(body: PresetBody, db: Session = Depends(get_session)) -> dict:
     return view
 
 
+@router.get("/providers/{provider_id}/models", dependencies=[Depends(auth.require_user)])
+def provider_models(provider_id: str) -> dict:
+    """Live model ids from the provider's own API, so the picker only ever offers
+    models that currently exist. Returns [] if no key is set or the fetch fails."""
+    from ..services import providers
+
+    return {"provider": provider_id, "models": providers.fetch_models(provider_id)}
+
+
 @router.post("/backends/refresh", dependencies=[Depends(auth.require_user)])
 def refresh_backends() -> dict:
     """Re-probe every agentic CLI (the 'Re-check' button — e.g. after the operator

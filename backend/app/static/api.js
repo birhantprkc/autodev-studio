@@ -36,6 +36,7 @@ const API = {
   applyProviderPreset(provider) { return this.post("/api/settings/preset", { provider }); },
   refreshBackends() { return this.post("/api/settings/backends/refresh"); },
   installBackend(id) { return this.post(`/api/settings/backends/${id}/install`); },
+  providerModels(id) { return this.get(`/api/settings/providers/${id}/models`); },
   testEmbeddings() { return this.post("/api/settings/embeddings/test"); },
 
   // overview / repos

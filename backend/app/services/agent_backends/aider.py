@@ -57,16 +57,29 @@ class AiderBackend(AgentBackend):
                 env.setdefault(var, key)
         return env
 
+    _KEY_VARS = ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY",
+                 "XAI_API_KEY", "GROQ_API_KEY")
+
     def run(self, cwd: str, prompt: str, on_event: Event, *,
             model: str | None = None, timeout: int = 1800) -> dict:
         result = new_result()
         exe = self.resolve() or self.executable()
+        env = self._env()
+        # Aider has no login of its own — with no provider key AND no model it
+        # drops into an interactive OpenRouter OAuth browser flow and blocks for
+        # minutes. Fail fast with a clear message instead of hanging the stage.
+        if not model and not any(v in env for v in self._KEY_VARS):
+            result["error"] = ("aider needs a model + a provider API key — set one on "
+                               "the Providers tab (aider has no login of its own).")
+            on_event("error", result["error"])
+            return result
         # --message-file avoids arg-length limits; --yes-always answers every
-        # "add file to the chat?" prompt; the pipeline commits, aider must not.
+        # "add file to the chat?" prompt; the pipeline owns git, so aider must
+        # not commit or manage .gitignore.
         with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as f:
             f.write(prompt)
             msg_file = f.name
-        cmd = [exe, "--message-file", msg_file, "--yes-always",
+        cmd = [exe, "--message-file", msg_file, "--yes-always", "--no-gitignore",
                "--no-auto-commits", "--no-dirty-commits", "--no-attribute-author",
                "--no-check-update", "--no-show-model-warnings", "--no-pretty",
                "--no-stream"]
@@ -90,7 +103,7 @@ class AiderBackend(AgentBackend):
 
         try:
             self.stream(cmd, cwd, on_line, on_event, result,
-                        stdin_text="", timeout=timeout, env=self._env())
+                        stdin_text="", timeout=timeout, env=env)
         finally:
             try:
                 os.unlink(msg_file)

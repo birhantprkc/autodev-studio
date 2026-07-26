@@ -61,31 +61,39 @@ PROVIDERS: dict[str, Provider] = {
     "openai": Provider(
         "openai", "OpenAI (or primary endpoint)", "openai", "openai_api_key",
         base_url_field="openai_base_url",
-        models=("gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "o4-mini"),
-        default_model="gpt-4o",
-        note="The legacy 'primary' endpoint — its base URL is configurable (points at "
-             "Groq out of the box). Set it to https://api.openai.com/v1 for real OpenAI.",
+        # Fallback list only — OpenAI's ids move fast (5.1 retired by 03/2026,
+        # 5.6 shipping by 07/2026); the picker's "Refresh model lists" pulls the
+        # live set once a key is set. This is just a sane starting point.
+        models=("gpt-5.6", "gpt-5.5", "gpt-5.4-mini", "gpt-4.1", "gpt-4o-mini", "o3"),
+        default_model="gpt-5.5",
+        note="The 'primary' endpoint — base URL configurable (points at Groq out of the "
+             "box). Set it to https://api.openai.com/v1 for real OpenAI. Models refresh live.",
     ),
     "gemini": Provider(
         "gemini", "Google Gemini", "openai", "gemini_api_key",
         base_url_field="gemini_base_url",
+        # Prefer the never-stale "-latest" aliases as defaults; the exact-version
+        # ids are just a starting list — the picker refreshes them live from the
+        # provider (fetch_models). Verified present in the live /models response.
         models=(
-            "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3.1-flash-lite",
-            "gemini-flash-lite-latest",
+            "gemini-flash-latest", "gemini-flash-lite-latest", "gemini-pro-latest",
+            "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash", "gemini-2.5-pro",
         ),
-        default_model="gemini-3.1-flash-lite",
-        note="Google AI Studio via its OpenAI-compatible endpoint. Large per-minute budgets.",
+        default_model="gemini-flash-latest",
+        note="Google AI Studio via its OpenAI-compatible endpoint. Models refresh live; "
+             "the '-latest' aliases never go stale.",
     ),
     "xai": Provider(
         "xai", "xAI (Grok)", "openai", "xai_api_key",
         base_url="https://api.x.ai/v1",
-        models=("grok-4", "grok-4-fast", "grok-3", "grok-3-mini"),
-        default_model="grok-4-fast",
-        note="xAI Grok, OpenAI-compatible. Model ids change over time — free text is allowed.",
+        # grok-3/4 and grok-4-fast were retired 05/2026; current line is 4.5/4.3.
+        models=("grok-4.5", "grok-4.3", "grok-4.20-0309-non-reasoning"),
+        default_model="grok-4.5",
+        note="xAI Grok, OpenAI-compatible. Model ids change over time — models refresh live.",
     ),
     "anthropic": Provider(
         "anthropic", "Anthropic (API)", "anthropic", "anthropic_api_key",
-        models=("claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5"),
+        models=("claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5", "claude-fable-5"),
         default_model="claude-sonnet-5",
         note="Anthropic's native Messages API (used for the chat stages). For coding, pick "
              "'Claude Code (CLI)' on the Dev/Review stages instead.",
@@ -100,10 +108,14 @@ PROVIDERS: dict[str, Provider] = {
     ),
     "codex": Provider(
         "codex", "Codex CLI (agentic)", "agent", "openai_api_key",
-        models=("gpt-5.1-codex", "gpt-5.1-codex-max", "gpt-5.1-codex-mini", "gpt-5.1"),
-        default_model="gpt-5.1-codex",
+        models=("gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4-mini"),
+        # No forced default: the explicit '-codex' models are only valid with an
+        # OpenAI API key — a ChatGPT-account login rejects them (400). Leaving the
+        # model unset lets Codex auto-pick one its current auth supports.
+        default_model="",
         note="OpenAI's Codex CLI in headless mode (codex exec). Uses the host's ChatGPT "
-             "login when no OpenAI API key is set. Reports tokens but not cost.",
+             "login when no OpenAI API key is set — leave the model blank on a ChatGPT "
+             "login; the '-codex' models need an API key. Reports tokens but not cost.",
         backend="codex", path_field="codex_cli_path",
     ),
     "cursor-cli": Provider(
@@ -126,8 +138,9 @@ PROVIDERS: dict[str, Provider] = {
     ),
     "gemini-cli": Provider(
         "gemini-cli", "Gemini CLI (agentic)", "agent", "gemini_api_key",
-        models=("gemini-2.5-pro", "gemini-2.5-flash", "gemini-3-pro-preview"),
-        default_model="gemini-2.5-pro",
+        models=("gemini-flash-latest", "gemini-pro-latest", "gemini-3.5-flash",
+                "gemini-3.1-flash-lite", "gemini-2.5-pro"),
+        default_model="gemini-flash-latest",
         note="Google's Gemini CLI in non-interactive --yolo mode. Uses the Gemini key (or "
              "the host's Google login). Reports tokens but not cost.",
         backend="gemini-cli", path_field="gemini_cli_path",
@@ -208,6 +221,44 @@ def has_key(provider_id: str) -> bool:
     if p is None or not p.key_field:
         return False
     return bool(getattr(settings, p.key_field, ""))
+
+
+def fetch_models(provider_id: str) -> list[str]:
+    """Live model ids from the provider's own API, so the picker never shows a
+    model that no longer exists. Never raises — returns [] on any failure.
+
+    OpenAI-compatible providers (openai/groq/gemini/xai/custom) expose
+    ``GET {base}/models``; Anthropic its own ``/v1/models``. Agent-CLI backends
+    don't have a model API, so they fall back to their static aliases.
+    """
+    import httpx
+
+    p = PROVIDERS.get(provider_id)
+    if p is None:
+        return []
+    try:
+        if p.kind == "anthropic":
+            key = getattr(settings, p.key_field, "") if p.key_field else ""
+            if not key:
+                return []
+            r = httpx.get("https://api.anthropic.com/v1/models",
+                          headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
+                          timeout=15)
+            r.raise_for_status()
+            return [m["id"] for m in r.json().get("data", []) if m.get("id")]
+        if p.kind == "openai":
+            base, key = endpoint(provider_id)
+            if not (base and key):
+                return []
+            r = httpx.get(f"{base.rstrip('/')}/models",
+                          headers={"Authorization": f"Bearer {key}"}, timeout=15)
+            r.raise_for_status()
+            # Gemini's OpenAI-compat endpoint prefixes ids with "models/".
+            ids = [(m.get("id") or "").split("/")[-1] for m in r.json().get("data", [])]
+            return sorted(i for i in ids if i)
+    except Exception:  # noqa: BLE001 — a live fetch failure must never break Settings
+        return []
+    return list(p.models)  # agent CLIs: their static aliases
 
 
 def label(provider_id: str, model: str = "") -> str:

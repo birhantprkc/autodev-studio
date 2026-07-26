@@ -36,9 +36,19 @@ class CodexBackend(AgentBackend):
             model: str | None = None, timeout: int = 1800) -> dict:
         result = new_result()
         exe = self.resolve() or self.executable()
-        cmd = [exe, "exec", "--json", "--full-auto", "--skip-git-repo-check", "--cd", cwd]
-        if model:
+        # --sandbox workspace-write replaces the deprecated --full-auto (edits in
+        # the workspace allowed, network/other paths blocked); exec is already
+        # non-interactive so no approval prompts.
+        cmd = [exe, "exec", "--json", "--sandbox", "workspace-write",
+               "--skip-git-repo-check", "--cd", cwd]
+        # A ChatGPT-account login rejects an explicit --model (400: "not supported
+        # when using Codex with a ChatGPT account") — only the account's own default
+        # is allowed. So only pass --model when authenticating with an API key;
+        # otherwise let Codex pick the model its plan supports.
+        if model and settings.openai_api_key:
             cmd += ["--model", model]
+        elif model:
+            on_event("info", f"ChatGPT-account Codex: ignoring model '{model}', using the plan default")
         cmd.append("-")  # prompt on stdin (avoids arg-length limits)
 
         def on_line(line: str) -> None:

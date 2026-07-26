@@ -1252,6 +1252,33 @@ function buildCardField(f) {
   return wrap;
 }
 
+// Pull each keyed provider's current model ids live, so the dropdowns never
+// offer a model that no longer exists (the alternative — a hardcoded catalog —
+// goes stale). Updates the in-memory view's model lists and re-renders.
+function buildModelRefreshRow(view) {
+  const row = node(`<div class="row" style="margin:0 2px 14px; gap:10px; align-items:center">
+    <button class="btn btn-sm" id="models-refresh">↻ Refresh model lists</button>
+    <span class="small faint">Pulls current model ids live from every provider with a key set —
+    so a dropdown never shows a model that has been retired.</span></div>`);
+  row.querySelector("#models-refresh").addEventListener("click", async (e) => {
+    const btn = e.currentTarget; btn.disabled = true; btn.textContent = "Refreshing…";
+    const keyed = (view.providers || []).filter(
+      (p) => (p.kind === "openai" || p.kind === "anthropic") && p.key_set);
+    let updated = 0;
+    for (const p of keyed) {
+      try {
+        const r = await API.providerModels(p.id);
+        const tgt = (SETTINGS_STATE.view.providers || []).find((x) => x.id === p.id);
+        if (tgt && r && r.models && r.models.length) { tgt.models = r.models; updated++; }
+      } catch (err) { /* one provider failing shouldn't abort the rest */ }
+    }
+    toast(updated ? `Refreshed model lists for ${updated} provider(s)`
+                  : "No providers with a key set to refresh", !updated);
+    showSettingsTab("models");
+  });
+  return row;
+}
+
 function buildPresetRow(view) {
   const opts = (view.preset_providers || []).map((p) =>
     `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("");
@@ -1411,7 +1438,10 @@ function showSettingsTab(id) {
   host.appendChild(node(`<p class="small faint" style="margin:0 2px 2px; line-height:1.5">${esc(group.help)}${IS_ADMIN ? "" : " — read-only (admin role required to edit)"}</p>`));
 
   if (id === "providers") { renderConnectionsTab(host, view, group); return; }
-  if (id === "models") host.appendChild(buildPresetRow(view));
+  if (id === "models") {
+    host.appendChild(buildPresetRow(view));
+    if (IS_ADMIN) host.appendChild(buildModelRefreshRow(view));
+  }
 
   const byName = Object.fromEntries(group.fields.map((f) => [f.name, f]));
   const consumed = new Set();
