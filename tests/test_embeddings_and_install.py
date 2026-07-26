@@ -30,11 +30,18 @@ class _FakeResp:
 # --- embeddings ---------------------------------------------------------------
 
 def test_api_mode_needs_base_url():
+    import importlib.util
+
     settings.rag_embeddings = "api"
     settings.embedding_api_base_url = ""
     assert local_rag.semantic_available() is False
+    # With a base url, api-mode availability ALSO depends on qdrant being present
+    # (it's the vector store). Assert it tracks that — which passes both locally
+    # (qdrant installed) and in CI (core-only, no semantic extras) and still
+    # proves the availability cache re-keys when settings change.
     settings.embedding_api_base_url = "http://localhost:11434/v1"
-    assert local_rag.semantic_available() is True  # cache re-keys on settings
+    has_qdrant = importlib.util.find_spec("qdrant_client") is not None
+    assert local_rag.semantic_available() is has_qdrant
 
 
 def test_api_embed_posts_openai_shape_and_adopts_dim(monkeypatch):
