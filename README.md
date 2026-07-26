@@ -101,7 +101,8 @@ which is to say, most of what a team actually does.
 | | Feature |
 |---|---|
 | **Repo knowledge base** | Clone → chunk → embed any Git repo into a local vector DB; agents query it for grounded context. Free local embeddings ([fastembed](https://github.com/qdrant/fastembed) `bge-small`) + embedded Qdrant, with a pure-Python TF-IDF fallback that needs no model. |
-| **Structured multi-view knowledge** | Beyond chunks, each repo is statically analyzed (`ast`) into interpreted *views* — architecture, modules, features, workflows, entry points, domain concepts, rules, integrations. Facts come from code; only interpretation comes from the LLM. |
+| **Structured multi-view knowledge** | Beyond chunks, each repo is statically analyzed into interpreted *views* — architecture, modules, features, workflows, entry points, domain concepts, rules, integrations. Facts come from code; only interpretation comes from the LLM. |
+| **Language-agnostic** | Symbol extraction, edit-time syntax gates, and test running all dispatch through one language registry — Python (exact `ast`), JS/TS, Go, Rust, Java, and Ruby today. Unsupported languages fail open (still indexed, still edited) rather than breaking the run. |
 | **Agentic PM scoping** | A PM agent runs a Socratic clarify-loop, hunting for ambiguity before locking a scope, then drafts concrete engineering tickets. |
 | **Human approval gate** | No agent touches code until a human approves the ticket (optionally pushed to Jira). |
 | **Dev → QA → Review → PR pipeline** | Runs on an isolated branch of a cloned working copy; opens a real PR via `gh`. |
@@ -198,8 +199,25 @@ usable by more than its author:
   the OpenAI-compatible edit loop. No Jira → a no-op. It runs fully offline, zero-CDN, on a
   free-tier key.
 - **Grounded, not hallucinated.** The structured views take their *facts* from static
-  analysis (`ast`) and let the LLM supply only interpretation — so the map the agents
+  analysis and let the LLM supply only interpretation — so the map the agents
   navigate by is anchored to the real code.
+
+### Keeping the knowledge base fresh, cheaply
+
+The KB doesn't just get built once and go stale as the repo moves on. At the start of
+every run it's synced to `origin`'s current commit via two watermarked layers:
+
+- **Symbol map** (file → line-numbered classes/functions/imports): free, deterministic,
+  re-analyzed incrementally for only the files that changed since the last sync — so
+  it's always *exactly* current, on every run, at zero cost.
+- **LLM-written views** (architecture, modules, features, …): watermarked by commit SHA.
+  A small drift regenerates just the affected modules' docs; a large drift (many files
+  changed) triggers a full rebuild, rate-limited so a hot repo doesn't re-pay ingest cost
+  on every commit.
+
+Knowledge that accumulates *across* runs — delivery notes, distilled lessons from past
+tickets — survives rebuilds by design instead of being wiped: rebuilds regenerate
+interpretation, never history.
 
 ### Screenshots
 
