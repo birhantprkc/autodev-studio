@@ -111,6 +111,10 @@ def test_aider_parses_text_meter(tmp_path, monkeypatch):
     exe = _fake_cli(tmp_path, "aider",
                     "\n".join(f"print({json.dumps(l)})" for l in out))
     monkeypatch.setattr("app.config.settings.aider_cli_path", exe)
+    # aider has no login of its own, so the adapter requires a provider key (or a
+    # model) before it will run — set one so this exercises the meter parsing and
+    # doesn't depend on the ambient env having a key (CI runs with none).
+    monkeypatch.setattr("app.config.settings.openai_api_key", "sk-test")
     res = agent_backends.run("aider", str(tmp_path), "prompt", lambda s, m: None)
     assert res["error"] is None
     assert res["tokens_in"] == 4200 and res["tokens_out"] == 291
