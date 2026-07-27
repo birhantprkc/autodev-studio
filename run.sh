@@ -37,9 +37,14 @@ python -m pip install --quiet --upgrade pip
 # [semantic] pulls fastembed + qdrant for local embeddings. If no wheels exist
 # for your platform, the core install still works — the knowledge base falls
 # back to its pure-Python TF-IDF index.
-python -m pip install --quiet -e "$ROOT[semantic]" || {
-  echo "→ semantic extras unavailable; installing core only (TF-IDF fallback)"
-  python -m pip install --quiet -e "$ROOT"
+# Best available first: [treesitter] adds exact parse trees for non-Python
+# languages. Each tier degrades gracefully if no wheels exist for the platform.
+python -m pip install --quiet -e "$ROOT[semantic,treesitter]" || {
+  echo "→ tree-sitter extras unavailable; installing semantic only (regex extractors)"
+  python -m pip install --quiet -e "$ROOT[semantic]" || {
+    echo "→ semantic extras unavailable; installing core only (TF-IDF fallback)"
+    python -m pip install --quiet -e "$ROOT"
+  }
 }
 
 if [ ! -f "$ROOT/.env" ] && [ -f "$ROOT/.env.example" ]; then

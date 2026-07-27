@@ -2,10 +2,11 @@
 
     analyze (static facts) → generate (LLM views) → store (JSON) → index (Qdrant)
 
-Called from ingest on a background thread, after the chunk-level RAG index is
-built. Reports progress through a callback so the UI's `kb_step` reflects each
-phase. Safe to skip: if there's no LLM key or the semantic stack is missing, the
-platform still works on chunk RAG alone.
+Called from ingest on a background thread. Reports progress through a callback
+so the UI's `kb_step` reflects each phase. The JSON store is the source of
+truth: when the semantic stack is unavailable the vector index is simply
+skipped and retrieval degrades to the TF-IDF fallback over the stored docs.
+Safe to skip entirely only when the knowledge stage has no runnable LLM.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import UTC
 
 from ...config import settings
-from .. import git_ops, local_rag
+from .. import git_ops
 from . import analyzer, generator, indexer, retriever, store, symbol_map
 
 logger = logging.getLogger(__name__)
@@ -34,9 +35,13 @@ class KnowledgeResult:
 
 
 def enabled() -> bool:
-    """Structured knowledge needs an LLM (Groq/OpenAI) and the semantic stack."""
-    return bool(settings.generate_knowledge and settings.openai_api_key
-                and local_rag.semantic_available())
+    """Structured knowledge needs a runnable LLM on the knowledge stage —
+    whichever provider that stage is pointed at (API key or installed CLI).
+    The semantic stack is NOT required: docs are stored as JSON either way,
+    indexing no-ops gracefully, and retrieval falls back to TF-IDF."""
+    from .. import providers
+
+    return bool(settings.generate_knowledge and providers.can_chat(settings.knowledge_provider))
 
 
 def generate(repo_url: str, progress=None) -> KnowledgeResult:
@@ -44,8 +49,7 @@ def generate(repo_url: str, progress=None) -> KnowledgeResult:
     returns a KnowledgeResult with `error` set on failure."""
     if not enabled():
         reason = ("knowledge generation disabled" if not settings.generate_knowledge
-                  else "no LLM key" if not settings.openai_api_key
-                  else "semantic stack unavailable")
+                  else f"knowledge provider '{settings.knowledge_provider}' has no key/CLI")
         logger.info("knowledge.pipeline: skipping (%s)", reason)
         return KnowledgeResult(error=reason)
 

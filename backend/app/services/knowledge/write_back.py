@@ -165,7 +165,7 @@ def _synthesize(title: str, dev_summary: str, qa_text: str, review_text: str,
     fallback when unavailable."""
     fallback = (f"Implemented '{title[:120]}' across {len(files)} file(s): "
                 f"{', '.join(files[:6])}.")
-    if not settings.openai_api_key:
+    if not providers.can_chat(settings.knowledge_provider):
         return fallback, [], [], 0.0
     user = (
         f"Change delivered: {title}\n\nFiles touched:\n"
@@ -256,8 +256,7 @@ def _merge_lessons(module: str, old: list[str], new: list[str]) -> list[str]:
     """LLM-merge old + new lessons (dedup, drop transient); deterministic
     order-preserving dedupe capped at 8 when no LLM is available."""
     fallback = list(dict.fromkeys(old + new))[:8]
-    if not settings.openai_api_key and not providers.has_key(settings.knowledge_provider) \
-            and providers.kind(settings.knowledge_provider) != "claude-cli":
+    if not providers.can_chat(settings.knowledge_provider):
         return fallback
     user = (f"Module: {module}\n\nExisting lessons:\n"
             + ("\n".join(f"- {x}" for x in old) or "(none)")

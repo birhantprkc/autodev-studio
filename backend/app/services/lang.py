@@ -14,10 +14,20 @@ edits applied ungated, and tests reported as "couldn't run" (None) rather than
 FAIL — the QA agent already treats INCONCLUSIVE as not-a-pass, so degrading
 gracefully never fabricates a green result.
 
-Python uses the stdlib `ast` (exact); other languages use line-anchored regex
-extractors with a naive brace/indent tracker for methods. Deliberately no
-tree-sitter: the extra fidelity isn't worth the native-lib memory/dependency
-cost for what is an index, not a compiler (this box has ~5.6 GiB RAM).
+Python uses the stdlib `ast` (exact). Other languages have two tiers, same
+pattern as the embedding layer (semantic when installed, tfidf otherwise):
+
+  * tree-sitter (optional, `pip install .[treesitter]`) — real parse trees for
+    JS/TS/Go/Rust/Java/Ruby, and an edit-time parse gate for all of them.
+    Grammars are lazy-loaded per language, so only what a repo actually uses
+    costs memory.
+  * regex fallback (always available, zero native deps) — line-anchored
+    extractors with a naive brace/indent tracker for methods. Good enough for
+    an index (the pipeline cross-checks every pin with live `git grep`), and it
+    keeps the core install dependency-light.
+
+Any tree-sitter failure (missing grammar, parse crash) silently degrades to the
+regex tier — the fidelity ceiling is set by what's installed, never the floor.
 """
 
 from __future__ import annotations
@@ -89,14 +99,227 @@ _MAX_SYMBOLS = 400  # per file — bounds symbols.json on generated/minified fil
 
 def extract_symbols(rel: str, source: str) -> list[dict]:
     """Line-numbered symbol facts for one file; [] when the language has no
-    extractor or the source doesn't parse. Dispatches on extension."""
-    fn = _SYMBOL_EXTRACTORS.get(_ext(rel))
+    extractor or the source doesn't parse. Dispatches on extension: Python via
+    stdlib ast, other languages via tree-sitter when installed (exact), the
+    regex extractor otherwise. An empty tree-sitter result also falls through
+    to regex — a walker gap must not lose symbols the fallback would find."""
+    ext = _ext(rel)
+    if ext != ".py":
+        ts = _ts_symbols(ext, source)
+        if ts:
+            return ts[:_MAX_SYMBOLS]
+    fn = _SYMBOL_EXTRACTORS.get(ext)
     if fn is None:
         return []
     try:
         return fn(source)[:_MAX_SYMBOLS]
     except Exception:  # noqa: BLE001 — an index must never take the pipeline down
         return []
+
+
+# ---------------------------------------------------------------------------
+# Optional tree-sitter tier — real parse trees when `.[treesitter]` is
+# installed. Grammars are lazy-loaded per language and cached, so memory scales
+# with the languages a repo actually contains, not with what the pack ships.
+# Every failure path (extra not installed, grammar missing, parse crash)
+# returns None and the caller degrades to the regex tier.
+# ---------------------------------------------------------------------------
+
+_TS_LANG_BY_EXT = {
+    ".js": "javascript", ".jsx": "javascript", ".mjs": "javascript",
+    ".cjs": "javascript",
+    ".ts": "typescript", ".tsx": "tsx",
+    ".go": "go", ".rs": "rust", ".java": "java", ".rb": "ruby",
+}
+
+_ts_parsers: dict[str, object] = {}  # grammar name → Parser | None (load failed)
+
+
+def _ts_parser(ts_lang: str):
+    if ts_lang not in _ts_parsers:
+        try:
+            from tree_sitter_language_pack import get_parser
+            _ts_parsers[ts_lang] = get_parser(ts_lang)
+        except Exception:  # noqa: BLE001 — optional tier; regex covers it
+            _ts_parsers[ts_lang] = None
+    return _ts_parsers[ts_lang]
+
+
+def treesitter_available(ext: str = ".js") -> bool:
+    """Whether the optional tree-sitter tier can serve this extension."""
+    ts_lang = _TS_LANG_BY_EXT.get(ext)
+    return ts_lang is not None and _ts_parser(ts_lang) is not None
+
+
+def _ts_symbols(ext: str, source: str) -> list[dict] | None:
+    """Symbols via tree-sitter; None = tier unavailable or the parse crashed
+    (caller falls back to the regex extractor)."""
+    ts_lang = _TS_LANG_BY_EXT.get(ext)
+    if ts_lang is None:
+        return None
+    parser = _ts_parser(ts_lang)
+    if parser is None:
+        return None
+    try:
+        tree = parser.parse(source.encode("utf-8"))
+        symbols: list[dict] = []
+        _TS_WALKERS[ts_lang](tree.root_node, symbols)
+        return symbols
+    except Exception:  # noqa: BLE001 — an index must never take the pipeline down
+        return None
+
+
+def _ts_name(node) -> str | None:
+    n = node.child_by_field_name("name")
+    return n.text.decode("utf-8", "replace") if n is not None else None
+
+
+def _ts_sym(node, kind: str, name: str, parent: str | None = None) -> dict:
+    d = {"n": name, "k": kind, "l": node.start_point[0] + 1}
+    if parent:
+        d["p"] = parent
+    return d
+
+
+_TS_JS_CLASS = {"class_declaration", "abstract_class_declaration"}
+_TS_JS_FUNC = {"function_declaration", "generator_function_declaration"}
+_TS_JS_TYPE = {"interface_declaration", "enum_declaration", "type_alias_declaration"}
+_TS_JS_FN_VALUES = {"arrow_function", "function_expression", "generator_function", "function"}
+_TS_UPPER_RE = re.compile(r"[A-Z_][A-Z0-9_]*")
+
+
+def _ts_walk_js(root, symbols: list[dict]) -> None:
+    for node in root.named_children:
+        if node.type == "export_statement":
+            decl = node.child_by_field_name("declaration")
+            if decl is not None:
+                _ts_js_decl(decl, symbols, exported=True)
+        else:
+            _ts_js_decl(node, symbols, exported=False)
+
+
+def _ts_js_decl(node, symbols: list[dict], exported: bool) -> None:
+    t = node.type
+    if t in _TS_JS_CLASS:
+        name = _ts_name(node)
+        if name:
+            symbols.append(_ts_sym(node, "class", name))
+            body = node.child_by_field_name("body")
+            for m in (body.named_children if body is not None else []):
+                if m.type == "method_definition" and (mn := _ts_name(m)):
+                    symbols.append(_ts_sym(m, "method", mn, parent=name))
+    elif t in _TS_JS_FUNC or t in _TS_JS_TYPE:
+        name = _ts_name(node)
+        if name:
+            symbols.append(_ts_sym(node, "function" if t in _TS_JS_FUNC else "class", name))
+    elif t in ("lexical_declaration", "variable_declaration"):
+        for d in node.named_children:
+            if d.type != "variable_declarator" or not (name := _ts_name(d)):
+                continue
+            value = d.child_by_field_name("value")
+            if value is not None and value.type in _TS_JS_FN_VALUES:
+                symbols.append(_ts_sym(d, "function", name))
+            elif exported or _TS_UPPER_RE.fullmatch(name):
+                symbols.append(_ts_sym(d, "const", name))
+
+
+def _ts_walk_go(root, symbols: list[dict]) -> None:
+    for node in root.named_children:
+        t = node.type
+        if t == "function_declaration":
+            if name := _ts_name(node):
+                symbols.append(_ts_sym(node, "function", name))
+        elif t == "method_declaration":
+            name = _ts_name(node)
+            recv = node.child_by_field_name("receiver")
+            recv_type = None
+            if recv is not None and recv.named_children:
+                tn = recv.named_children[0].child_by_field_name("type")
+                if tn is not None:
+                    recv_type = tn.text.decode("utf-8", "replace").lstrip("*").split("[")[0]
+            if name:
+                symbols.append(_ts_sym(node, "method", name, parent=recv_type)
+                               if recv_type else _ts_sym(node, "function", name))
+        elif t == "type_declaration":
+            for spec in node.named_children:
+                if spec.type in ("type_spec", "type_alias") and (name := _ts_name(spec)):
+                    symbols.append(_ts_sym(spec, "class", name))
+        elif t in ("const_declaration", "var_declaration"):
+            for spec in node.named_children:
+                if spec.type in ("const_spec", "var_spec") and (name := _ts_name(spec)):
+                    symbols.append(_ts_sym(spec, "const", name))
+
+
+def _ts_walk_rust(root, symbols: list[dict]) -> None:
+    for node in root.named_children:
+        t = node.type
+        if t in ("struct_item", "enum_item", "trait_item", "union_item"):
+            if name := _ts_name(node):
+                symbols.append(_ts_sym(node, "class", name))
+        elif t in ("const_item", "static_item"):
+            if name := _ts_name(node):
+                symbols.append(_ts_sym(node, "const", name))
+        elif t == "function_item":
+            if name := _ts_name(node):
+                symbols.append(_ts_sym(node, "function", name))
+        elif t == "impl_item":
+            tn = node.child_by_field_name("type")
+            parent = tn.text.decode("utf-8", "replace").split("<")[0] if tn is not None else None
+            body = node.child_by_field_name("body")
+            for m in (body.named_children if body is not None else []):
+                if m.type == "function_item" and (mn := _ts_name(m)):
+                    symbols.append(_ts_sym(m, "method", mn, parent=parent))
+
+
+_TS_JAVA_TYPES = {"class_declaration", "interface_declaration", "enum_declaration",
+                  "record_declaration", "annotation_type_declaration"}
+
+
+def _ts_walk_java(root, symbols: list[dict]) -> None:
+    for node in root.named_children:
+        if node.type in _TS_JAVA_TYPES and (name := _ts_name(node)):
+            symbols.append(_ts_sym(node, "class", name))
+            body = node.child_by_field_name("body")
+            if body is not None:
+                _ts_java_body(body, symbols, name)
+
+
+def _ts_java_body(body, symbols: list[dict], parent: str) -> None:
+    for m in body.named_children:
+        # constructors read as the class itself — skip, like the regex tier
+        if m.type == "method_declaration" and (mn := _ts_name(m)):
+            symbols.append(_ts_sym(m, "method", mn, parent=parent))
+        elif m.type in _TS_JAVA_TYPES and (mn := _ts_name(m)):
+            symbols.append(_ts_sym(m, "class", mn))
+            inner = m.child_by_field_name("body")
+            if inner is not None:
+                _ts_java_body(inner, symbols, mn)
+
+
+def _ts_walk_ruby(root, symbols: list[dict], parent: str | None = None) -> None:
+    for node in root.named_children:
+        t = node.type
+        if t in ("class", "module"):
+            name = _ts_name(node)
+            if name:
+                symbols.append(_ts_sym(node, "class", name))
+            body = node.child_by_field_name("body")
+            if body is not None:
+                _ts_walk_ruby(body, symbols, parent=name or parent)
+        elif t in ("method", "singleton_method"):
+            name = _ts_name(node)
+            if name:
+                symbols.append(_ts_sym(node, "method", name, parent=parent)
+                               if parent else _ts_sym(node, "function", name))
+        elif t == "body_statement":
+            _ts_walk_ruby(node, symbols, parent=parent)
+
+
+_TS_WALKERS = {
+    "javascript": _ts_walk_js, "typescript": _ts_walk_js, "tsx": _ts_walk_js,
+    "go": _ts_walk_go, "rust": _ts_walk_rust,
+    "java": _ts_walk_java, "ruby": _ts_walk_ruby,
+}
 
 
 def _python_symbols(source: str) -> list[dict]:
@@ -380,7 +603,40 @@ def syntax_error(rel: str, content: str) -> str | None:
         except Exception:  # noqa: BLE001 — gate is best-effort
             return None
         return None
-    return None  # TS/Rust/Java/…: no cheap ambient checker — fail open
+    # Everything else: tree-sitter when installed (gates TS/Rust/Java/Ruby, and
+    # JS/Go when node/gofmt are missing); no tier available — fail open, the
+    # test run still catches real breakage later.
+    return _ts_gate(ext, content)
+
+
+def _ts_gate(ext: str, content: str) -> str | None:
+    """Parse-gate via tree-sitter; None = parses fine OR the tier can't judge
+    (not installed / grammar missing / parser crash — fail open)."""
+    ts_lang = _TS_LANG_BY_EXT.get(ext)
+    parser = _ts_parser(ts_lang) if ts_lang else None
+    if parser is None:
+        return None
+    try:
+        tree = parser.parse(content.encode("utf-8"))
+    except Exception:  # noqa: BLE001 — gate is best-effort
+        return None
+    node = _ts_first_error(tree.root_node)
+    if node is None:
+        return None
+    return f"line {node.start_point[0] + 1}: does not parse ({ts_lang})"
+
+
+def _ts_first_error(node):
+    """Deepest-first ERROR/missing node, for a usable line number."""
+    if node.type == "ERROR" or node.is_missing:
+        return node
+    if not node.has_error:
+        return None
+    for child in node.children:
+        found = _ts_first_error(child)
+        if found is not None:
+            return found
+    return node  # has_error with no localizable child — report the node itself
 
 
 def _node_check(content: str, ext: str) -> str | None:
@@ -412,7 +668,7 @@ def _node_check(content: str, ext: str) -> str | None:
 
 @dataclass(frozen=True)
 class Runner:
-    kind: str                       # python | node | go | cargo
+    kind: str                       # python | node | go | cargo | maven | gradle | rspec
     label: str                      # command string advertised to the Dev agent
     cmd: list[str]                  # full-suite command (python filled by caller)
     fail_re: re.Pattern | None      # per-test failure ids; None = can't baseline
@@ -437,9 +693,23 @@ _CARGO = Runner(
     kind="cargo", label="cargo test", cmd=["cargo", "test"],
     fail_re=re.compile(r"^test (\S+) \.\.\. FAILED", re.MULTILINE),
     accepts_paths=False)
+# Surefire's [ERROR] lines vary too much across plugin versions to parse into
+# stable per-test ids — no baselining (QA still reads the full output).
+_MAVEN = Runner(
+    kind="maven", label="mvn -q test", cmd=["mvn", "-q", "test"],
+    fail_re=None, accepts_paths=False,
+    no_tests_markers=("no tests to run",))
+_GRADLE = Runner(
+    kind="gradle", label="./gradlew test", cmd=["./gradlew", "test", "--console=plain"],
+    fail_re=re.compile(r"^(\S+ > \S+) FAILED\s*$", re.MULTILINE),
+    accepts_paths=False)
+_RSPEC = Runner(
+    kind="rspec", label="bundle exec rspec", cmd=["bundle", "exec", "rspec"],
+    fail_re=re.compile(r"^rspec (\S+)", re.MULTILINE), accepts_paths=False,
+    setup="bundle", no_tests_markers=("no examples found",))
 
 
-_RUNNERS_BY_KIND = {r.kind: r for r in (_PYTEST, _NODE, _GO, _CARGO)}
+_RUNNERS_BY_KIND = {r.kind: r for r in (_PYTEST, _NODE, _GO, _CARGO, _MAVEN, _GRADLE, _RSPEC)}
 
 
 def detect_runner_by_kind(kind: str) -> Runner | None:
@@ -459,6 +729,17 @@ def detect_runner(root: Path) -> Runner | None:
         return _GO
     if (root / "Cargo.toml").exists() and shutil.which("cargo"):
         return _CARGO
+    if (root / "pom.xml").exists() and shutil.which("mvn"):
+        return _MAVEN
+    # Gradle only via the checked-in wrapper (standard practice) — the runner's
+    # command is static, so a wrapper-less repo with only a system gradle would
+    # advertise a command that can't run. Fail open to None instead.
+    if (((root / "build.gradle").exists() or (root / "build.gradle.kts").exists())
+            and (root / "gradlew").exists()):
+        return _GRADLE
+    if ((root / "spec").exists() and (root / "Gemfile").exists()
+            and shutil.which("bundle")):
+        return _RSPEC
     if (root / "package.json").exists() and shutil.which("npm"):
         return _NODE
     return None

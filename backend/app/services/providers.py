@@ -223,6 +223,20 @@ def has_key(provider_id: str) -> bool:
     return bool(getattr(settings, p.key_field, ""))
 
 
+def can_chat(provider_id: str) -> bool:
+    """Whether a chat stage pointed at `provider_id` can actually run: an
+    API-kind provider with its key set, or an agentic CLI that is installed
+    (CLIs may run on the host's login with no key at all). This — not
+    ``settings.openai_api_key`` — is the correct gate for stage-routed LLM
+    work; checking one hardcoded key contradicts the per-stage registry."""
+    k = kind(provider_id)
+    if k in ("claude-cli", "agent"):
+        from . import agent_backends  # local import — avoids a module cycle
+
+        return agent_backends.is_available(agent_backend(provider_id))
+    return has_key(provider_id)
+
+
 def fetch_models(provider_id: str) -> list[str]:
     """Live model ids from the provider's own API, so the picker never shows a
     model that no longer exists. Never raises — returns [] on any failure.

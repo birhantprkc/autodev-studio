@@ -77,3 +77,71 @@ class TestIsTransient:
 
     def test_code_error_is_not_transient(self):
         assert not orch._is_transient("patch does not apply")
+
+
+def _sub(**over):
+    base = {"affected_files": ["rich/ansi.py"], "criteria": ["given X, Y happens"],
+            "target_symbols": ["rich/ansi.py::decode_line"]}
+    base.update(over)
+    return base
+
+
+class TestFastPathEligible:
+    """Pre-Dev triage is deterministic: it must only fire on one fully
+    grep-pinned ticket, and any unverified localization must fall through."""
+
+    def test_pinned_single_ticket_is_eligible(self, monkeypatch):
+        monkeypatch.setattr(orch.settings, "fast_path_enabled", True)
+        assert orch._fast_path_eligible([_sub()])
+
+    def test_disabled_setting_wins(self, monkeypatch):
+        monkeypatch.setattr(orch.settings, "fast_path_enabled", False)
+        assert not orch._fast_path_eligible([_sub()])
+
+    def test_multiple_tickets_are_not_trivial(self, monkeypatch):
+        monkeypatch.setattr(orch.settings, "fast_path_enabled", True)
+        assert not orch._fast_path_eligible([_sub(), _sub()])
+
+    def test_unpinned_symbol_falls_through(self, monkeypatch):
+        # A bare name (mention-only) or a "(new — not in repo yet)" tag means
+        # ground_tickets could NOT verify the definition site.
+        monkeypatch.setattr(orch.settings, "fast_path_enabled", True)
+        assert not orch._fast_path_eligible([_sub(target_symbols=["decode_line"])])
+        assert not orch._fast_path_eligible(
+            [_sub(target_symbols=["decode_line (new — not in repo yet)"])])
+        assert not orch._fast_path_eligible([_sub(target_symbols=[])])
+
+    def test_wide_localization_falls_through(self, monkeypatch):
+        monkeypatch.setattr(orch.settings, "fast_path_enabled", True)
+        assert not orch._fast_path_eligible([_sub(affected_files=["a.py", "b.py", "c.py"])])
+        assert not orch._fast_path_eligible([_sub(affected_files=[])])
+        assert not orch._fast_path_eligible([_sub(criteria=["a", "b", "c", "d", "e"])])
+
+
+class TestDiffStats:
+    DIFF = (
+        "diff --git a/rich/ansi.py b/rich/ansi.py\n"
+        "--- a/rich/ansi.py\n"
+        "+++ b/rich/ansi.py\n"
+        "@@ -1,2 +1,2 @@\n"
+        "-old = 1\n"
+        "+new = 1\n"
+        " context\n"
+        "diff --git a/tests/test_ansi.py b/tests/test_ansi.py\n"
+        "--- a/tests/test_ansi.py\n"
+        "+++ b/tests/test_ansi.py\n"
+        "@@ -0,0 +1,3 @@\n"
+        "+def test_new():\n"
+        "+    assert new == 1\n"
+        "+    assert True\n"
+    )
+
+    def test_counts_source_only(self):
+        # test files don't count against the fast-path budget — a one-line fix
+        # plus real regression tests is exactly the shape the fast path is for
+        files, lines = orch._diff_stats(self.DIFF)
+        assert files == 1
+        assert lines == 2
+
+    def test_empty_diff(self):
+        assert orch._diff_stats("") == (0, 0)

@@ -42,6 +42,14 @@ semantic = [
   "fastembed>=0.3",
   "qdrant-client>=1.9",
 ]
+# Exact symbol extraction + edit-time parse gates for JS/TS/Go/Rust/Java/Ruby
+# via real parse trees (grammars lazy-loaded per language). Without it the
+# language layer falls back to the built-in regex extractors — Python is
+# always exact via stdlib ast either way.
+treesitter = [
+  "tree-sitter>=0.23",
+  "tree-sitter-language-pack>=0.7",
+]
 dev = [
   "pytest>=8.0",
   "pytest-cov>=5.0",

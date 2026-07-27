@@ -138,6 +138,30 @@ class TestJavaRubySymbols:
         assert lang.extract_symbols("main.swift", "func x() {}") == []
 
 
+class TestRegexFallbackTier:
+    """The regex extractors must stay fully functional with tree-sitter absent —
+    the symbol-extraction tests above run through whichever tier is installed
+    (identical expectations = the parity check), so this class forces the
+    fallback path explicitly."""
+
+    def test_js_symbols_without_treesitter(self, monkeypatch):
+        monkeypatch.setattr(lang, "_ts_symbols", lambda _e, _s: None)
+        syms = lang.extract_symbols("src/session.js", TestJsTsSymbols.SRC)
+        assert _names(syms, "class") == ["Session"]
+        assert {s["n"] for s in syms if s["k"] == "method"} == {"connect", "close"}
+
+    def test_gate_fails_open_without_treesitter(self, monkeypatch):
+        monkeypatch.setattr(lang, "_ts_parser", lambda _l: None)
+        assert lang.syntax_error("x.rs", "fn broken( {") is None
+
+    def test_empty_treesitter_result_falls_through_to_regex(self, monkeypatch):
+        # A walker gap (parsed fine but yielded nothing) must not lose symbols
+        # the regex tier would find.
+        monkeypatch.setattr(lang, "_ts_symbols", lambda _e, _s: [])
+        syms = lang.extract_symbols("src/session.js", TestJsTsSymbols.SRC)
+        assert _names(syms, "class") == ["Session"]
+
+
 class TestTestFileDetection:
     def test_positive(self):
         for p in ("tests/test_cli.py", "pkg/store_test.go", "src/app.test.tsx",
@@ -171,9 +195,18 @@ class TestSyntaxGate:
     def test_python_good(self):
         assert lang.syntax_error("x.py", "def ok():\n    return 1\n") is None
 
-    def test_ungated_language_fails_open(self):
-        assert lang.syntax_error("x.rs", "fn broken( {") is None
-        assert lang.syntax_error("x.ts", "const x: = broken") is None
+    def test_treesitter_gates_when_available_else_fails_open(self):
+        # With the optional tree-sitter tier these languages ARE gated; without
+        # it they fail open (no checker) — both behaviors are correct.
+        for rel, broken, ok in (("x.rs", "fn broken( {", "fn ok() {}\n"),
+                                ("x.ts", "const x: = broken", "const x = 1;\n"),
+                                ("A.java", "class A { void x( { }", "class A {}\n"),
+                                ("a.rb", "def broken(\n", "def ok\nend\n")):
+            if lang.treesitter_available("." + rel.rsplit(".", 1)[-1]):
+                assert lang.syntax_error(rel, broken) is not None, rel
+            else:
+                assert lang.syntax_error(rel, broken) is None, rel
+            assert lang.syntax_error(rel, ok) is None, rel
 
 
 class TestRunnerDetection:
@@ -197,6 +230,25 @@ class TestRunnerDetection:
         monkeypatch.setattr(lang.shutil, "which", lambda _: "/usr/bin/tool")
         (tmp_path / "package.json").write_text('{"scripts": {"test": "jest"}}')
         assert lang.detect_runner(tmp_path).kind == "node"
+
+    def test_maven(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setattr(lang.shutil, "which", lambda _: "/usr/bin/tool")
+        (tmp_path / "pom.xml").write_text("<project/>")
+        assert lang.detect_runner(tmp_path).kind == "maven"
+
+    def test_gradle_requires_wrapper(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setattr(lang.shutil, "which", lambda _: "/usr/bin/tool")
+        (tmp_path / "build.gradle").write_text("")
+        # no checked-in gradlew → the static ./gradlew command couldn't run
+        assert lang.detect_runner(tmp_path) is None
+        (tmp_path / "gradlew").write_text("#!/bin/sh\n")
+        assert lang.detect_runner(tmp_path).kind == "gradle"
+
+    def test_rspec(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setattr(lang.shutil, "which", lambda _: "/usr/bin/tool")
+        (tmp_path / "spec").mkdir()
+        (tmp_path / "Gemfile").write_text("source 'https://rubygems.org'\n")
+        assert lang.detect_runner(tmp_path).kind == "rspec"
 
     def test_unknown_repo(self, tmp_path: Path):
         assert lang.detect_runner(tmp_path) is None
@@ -225,9 +277,31 @@ class TestFailureParsing:
         assert runner.fail_re is None
         assert lang.parse_failures(runner, "anything") is None
 
+    def test_gradle_ids(self):
+        out = ("com.example.FooTest > testBar FAILED\n"
+               "    org.junit.ComparisonFailure at FooTest.java:42\n"
+               "5 tests completed, 1 failed\n")
+        runner = lang.detect_runner_by_kind("gradle")
+        assert lang.parse_failures(runner, out) == {"com.example.FooTest > testBar"}
+
+    def test_rspec_ids(self):
+        out = ("Failures:\n\nFailed examples:\n\n"
+               "rspec ./spec/models/user_spec.rb:12 # User validates email\n")
+        runner = lang.detect_runner_by_kind("rspec")
+        assert lang.parse_failures(runner, out) == {"./spec/models/user_spec.rb:12"}
+
+    def test_maven_cannot_baseline(self):
+        runner = lang.detect_runner_by_kind("maven")
+        assert runner.fail_re is None
+        assert lang.parse_failures(runner, "anything") is None
+
     def test_no_tests_found(self):
         py = lang.detect_runner_by_kind("python")
         assert lang.no_tests_found(py, 5, "")
         assert not lang.no_tests_found(py, 1, "1 failed")
         go = lang.detect_runner_by_kind("go")
         assert lang.no_tests_found(go, 0, "?\texample.com/x\t[no test files]\n")
+        rspec = lang.detect_runner_by_kind("rspec")
+        assert lang.no_tests_found(rspec, 0, "No examples found.\n0 examples, 0 failures\n")
+        # a real 10-example green run must NOT read as "no tests"
+        assert not lang.no_tests_found(rspec, 0, "10 examples, 0 failures\n")

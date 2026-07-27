@@ -73,6 +73,8 @@ def finish_run(run_id: int, task_id: int, t0: float, *, tokens_in: int | None = 
     but flagged usage_unknown so the UI never shows a fake $0.00."""
     with Session(engine) as db:
         run = db.get(AgentRun, run_id)
+        if run is None:
+            return
         run.status = RunStatus.failed.value if error else RunStatus.completed.value
         run.tokens_input = tokens_in or 0
         run.tokens_output = tokens_out or 0

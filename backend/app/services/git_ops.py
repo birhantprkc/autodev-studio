@@ -521,7 +521,8 @@ def test_python(path: str) -> str:
 def ensure_test_env(path: str) -> "lang.Runner | None":
     """Detect the repo's test ecosystem and make it runnable (best-effort):
     python → per-repo venv via test_python(); node → npm install when
-    node_modules is missing; go/cargo fetch their own deps on first run.
+    node_modules is missing; ruby → bundle install when the bundle isn't
+    satisfied; go/cargo/maven/gradle fetch their own deps on first run.
     Returns the runner, or None when no ecosystem is recognized."""
     root = Path(path).resolve()
     runner = lang.detect_runner(root)
@@ -533,6 +534,14 @@ def ensure_test_env(path: str) -> "lang.Runner | None":
             has_lock = (root / "package-lock.json").exists()
             _run(["npm", "ci" if has_lock else "install", "--no-audit", "--no-fund"],
                  cwd=path, timeout=600, check=False)
+        except Exception:  # noqa: BLE001 — best-effort; tests then report None
+            pass
+    if runner.setup == "bundle":
+        try:
+            p = subprocess.run(["bundle", "check"], cwd=path, capture_output=True,
+                               text=True, timeout=60)
+            if p.returncode != 0:
+                _run(["bundle", "install", "--quiet"], cwd=path, timeout=600, check=False)
         except Exception:  # noqa: BLE001 — best-effort; tests then report None
             pass
     return runner
@@ -642,7 +651,8 @@ def failing_tests(path: str, timeout: int = 600) -> set[str] | None:
 def run_tests(path: str, test_paths: list[str] | None = None,
               timeout: int = 600) -> tuple[bool | None, str]:
     """Best-effort: detect and run the repo's test suite (pytest / npm test /
-    go test / cargo test — see lang.detect_runner). Returns (passed, output).
+    go test / cargo test / mvn test / gradlew test / rspec — see
+    lang.detect_runner). Returns (passed, output).
     passed is None when no suite is found or deps are missing — never a false
     FAIL. With `test_paths`, runs only those test files where the ecosystem
     supports targeting (pytest files; go per-package)."""

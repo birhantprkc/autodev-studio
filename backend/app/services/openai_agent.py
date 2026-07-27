@@ -1,5 +1,12 @@
-"""QA agent on a DIFFERENT provider (OpenAI) so the review of Claude's work is
-less correlated with the model that wrote it."""
+"""OpenAI-compatible transport: chat completions with cross-provider fallback,
+plus the SEARCH/REPLACE agentic coding loop.
+
+`chat` serves any stage routed to an OpenAI-kind provider (groq/openai/gemini/
+xai/custom), with per-minute-budget trimming, 429/network retries, and fallback
+across the other configured stages' providers (separate free-tier quota pools).
+`code` is the HTTP coding loop used when no agentic CLI backend is available:
+localize → edit (SEARCH/REPLACE protocol) → verify against the applied diff and
+targeted tests → iterate."""
 
 import json
 import re

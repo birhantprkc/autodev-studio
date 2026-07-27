@@ -42,11 +42,19 @@ def list_repos(db: Session = Depends(get_session)) -> list[Repo]:
 @router.post("/ingest", response_model=Repo, status_code=201,
              dependencies=[Depends(require_member)])
 def ingest_repo(body: IngestRepoRequest, db: Session = Depends(get_session)) -> Repo:
-    org, name = _parse_git_url(body.git_url)
+    # One Repo row per git URL: duplicates would share the same workspace clone
+    # and knowledge slug on disk, so deleting either row would destroy the
+    # other's data. Re-ingesting an existing repo is what Reindex is for.
+    url = body.git_url.strip()
+    existing = db.exec(select(Repo).where(Repo.git_url == url)).first()
+    if existing is not None:
+        raise HTTPException(409, f"This repository is already ingested (id {existing.id}) — "
+                                 "use Reindex to rebuild its knowledge base.")
+    org, name = _parse_git_url(url)
     repo = Repo(
         name=name,
         org=org,
-        git_url=body.git_url,
+        git_url=url,
         default_branch=body.default_branch,
         key_prefix=_derive_prefix(name),
         kb_status=KBStatus.pending.value,

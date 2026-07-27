@@ -23,8 +23,16 @@ router = APIRouter(prefix="/sessions", tags=["scope-chat"])
 
 
 def _next_key(db: Session, repo: Repo) -> str:
-    count = len(db.exec(select(Task.id).where(Task.repo_id == repo.id)).all())
-    return f"{repo.key_prefix}-{101 + count}"
+    """Next free ticket key. Derived from the MAX existing key number, not the
+    row count — tickets get deleted (scope re-lock clears stale drafts), and a
+    count-based key would then collide with a surviving ticket's key."""
+    keys = db.exec(select(Task.key).where(Task.repo_id == repo.id)).all()
+    prefix = f"{repo.key_prefix}-"
+    highest = 100
+    for k in keys:
+        if k and k.startswith(prefix) and k[len(prefix):].isdigit():
+            highest = max(highest, int(k[len(prefix):]))
+    return f"{prefix}{highest + 1}"
 
 
 @router.post("", response_model=ScopeSession, status_code=201,

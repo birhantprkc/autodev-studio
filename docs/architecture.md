@@ -131,6 +131,24 @@ conservative rules — an explicit `VERDICT: FAIL` triggers a revision, but a so
 `INCONCLUSIVE` rather than silently read as a pass. (These rules are unit-tested in
 [`tests/test_orchestrator_verdicts.py`](../tests/test_orchestrator_verdicts.py).)
 
+### Trivial-task fast path
+
+The benchmarks show the pipeline's one structural loss: the fixed PM+QA+Review gate
+floor (~$0.14) makes very cheap greppable edits cost more than a cold `claude -p`. The
+fast path targets exactly that case. Triage is deterministic on both sides of Dev — no
+LLM self-estimate, for the same reason `ground_tickets` greps instead of asking a
+model: pre-Dev the scope must be a single ticket with small, grep-pinned localization
+(every target symbol resolved to a real definition site); post-Dev the actual diff must
+stay small (non-test files/lines) and the deterministic test gate must come back green
+(a runnable suite with zero new failures against the pre-Dev baseline). Only when all
+of that holds are the LLM QA and Review passes skipped, with explicit fast-path
+verdicts stamped on the tasks — never blank summaries, which downstream would read as
+"no issues". Anything short of full verification (no runnable suite, new failures, a
+bigger diff than triaged) falls through to the normal QA + Review loop. Beyond the
+gate-cost saving, the fast path also removes the LLM-QA false-fail risk that burns
+paid revision rounds on exactly these small changes. `FAST_PATH_ENABLED=false` turns
+it off.
+
 ## Execution model
 
 The Dev and Review agents don't use a bespoke tool schema — when pointed at the Claude

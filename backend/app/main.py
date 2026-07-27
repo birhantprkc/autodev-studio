@@ -2,7 +2,6 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlmodel import Session
 
@@ -31,14 +30,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="AutoDev Studio API", version="0.1.0", lifespan=lifespan)
 
-# Open CORS for local dev — the frontend is served from the same app.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# No CORS middleware on purpose: the frontend is served by this same app
+# (same-origin), so cross-origin API access isn't needed — and the previous
+# wildcard-origins-with-credentials config made Starlette echo ANY origin on
+# credentialed requests, undermining the cookie session's CSRF protections.
 
 # /auth handles its own access (login must work signed-out); everything else
 # requires a signed-in user, with member/admin checks on individual routes.

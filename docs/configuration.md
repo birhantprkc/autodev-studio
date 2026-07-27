@@ -79,6 +79,7 @@ See [knowledge-base.md](knowledge-base.md) for what these control.
 | Variable | Default | Purpose |
 |---|---|---|
 | `MAX_REVISION_ROUNDS` | `2` | Dev↔QA/Review revise loops before giving up (0 disables). |
+| `FAST_PATH_ENABLED` | `true` | Skip LLM QA+Review on deterministically trivial scopes whose change passes the test gate green with a small diff. |
 | `DEV_MAX_ROUNDS` | `4` | Max model calls per ticket inside the Dev agent. |
 | `DEV_RUN_TESTS` | `true` | Run targeted tests inside the Dev loop. |
 | `DEV_FILE_CHARS` | `30000` | Cap on pinned-file content injected into the Dev prompt. |

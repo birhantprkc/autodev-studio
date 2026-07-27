@@ -23,6 +23,7 @@ from . import (
     agent_runner,
     deepwiki,
     git_ops,
+    lang,
     llm,
     openai_agent,
     precision,
@@ -239,8 +240,9 @@ def _verified_locations(path: str, files: list[str] | None, symbols: list[str] |
 def _test_cmd(path: str) -> str:
     """Test command the Dev agent should verify with — '' when tests can't
     actually run here (advertising a broken command just misleads the agent).
-    Ecosystem-aware: pytest in the per-repo venv, npm test, go test, cargo test
-    (see lang.detect_runner); building the env is a side effect."""
+    Ecosystem-aware: pytest in the per-repo venv, npm test, go test, cargo test,
+    mvn/gradlew test, rspec (see lang.detect_runner); building the env is a
+    side effect."""
     try:
         return git_ops.test_command(path)
     except Exception:  # noqa: BLE001
@@ -377,6 +379,61 @@ def _qa_agent(key: str, title: str, criteria: list, diff: str, test_out: str, on
 # mid-flight applies to the next run, not the one in progress.
 def _max_revision_rounds() -> int:
     return max(0, int(settings.max_revision_rounds))
+
+
+# --- Trivial-task fast path ---------------------------------------------------
+# The fixed PM+QA+Review floor (~$0.14 in the benchmarks) makes very cheap
+# greppable edits lose to a cold `claude -p`; on trivial tasks LLM QA is also
+# the false-fail risk that burns paid revision rounds. Triage is deterministic
+# on BOTH sides of Dev (no LLM self-estimate — same rationale as
+# pm_agent.ground_tickets: cheap and can't hallucinate): pre-Dev the scope must
+# be one ticket with small, grep-pinned localization; post-Dev the actual diff
+# must be small AND the deterministic test gate green (runnable suite, zero new
+# failures). Only then are the LLM QA + Review passes skipped, with explicit
+# fast-path verdicts stamped — never blank summaries. No suite, new failures,
+# or a bigger change than triaged all fall through to the full loop.
+
+_FAST_PATH_MAX_FILES = 2      # scoped AND actually-touched non-test source files
+_FAST_PATH_MAX_LINES = 120    # changed non-test lines in the final diff
+
+
+def _fast_path_eligible(subs: list[dict]) -> bool:
+    """Pre-Dev triage: one ticket, ≤2 affected files, few criteria, and every
+    target symbol grep-pinned to a real definition ('file::name' — the form
+    ground_tickets emits only after verifying the definition site). Unpinned or
+    '(new — not in repo yet)' symbols mean unverified localization → full loop."""
+    if not settings.fast_path_enabled or len(subs) != 1:
+        return False
+    s = subs[0]
+    files = s.get("affected_files") or []
+    symbols = s.get("target_symbols") or []
+    if not files or len(files) > _FAST_PATH_MAX_FILES:
+        return False
+    if len(s.get("criteria") or []) > 4:
+        return False
+    return bool(symbols) and all(
+        "::" in str(y) and "(new" not in str(y) for y in symbols)
+
+
+def _diff_stats(diff_text: str) -> tuple[int, int]:
+    """(non-test source files touched, changed non-test lines) of a unified
+    diff — the post-Dev reality check that the change is as small as triaged.
+    Test files don't count against the budget: a one-line fix plus real
+    regression tests is exactly the shape the fast path is for."""
+    files: set[str] = set()
+    in_test = False
+    changed = 0
+    for line in diff_text.splitlines():
+        if line.startswith("diff --git "):
+            rel = line.split(" b/", 1)[-1]
+            in_test = lang.is_test_file(rel)
+            if not in_test:
+                files.add(rel)
+        elif not in_test and (
+                (line.startswith("+") and not line.startswith("+++"))
+                or (line.startswith("-") and not line.startswith("---"))):
+            changed += 1
+    return len(files), changed
 
 
 def _review_changes_requested(text: str) -> bool:
@@ -573,6 +630,8 @@ def _run_scope_locked(session_id: int) -> None:
     # --- QA + Review with a bounded revise loop: on CHANGES REQUESTED or QA FAIL,
     #     feed the feedback back to Dev, re-commit, and re-run — up to N rounds. ---
     qa_text = ""
+    rev_text = ""
+    fast_candidate = _fast_path_eligible(subs)
     max_rounds = _max_revision_rounds()
     for attempt in range(max_rounds + 1):
         # QA (OpenAI) over the whole scope diff
@@ -597,6 +656,28 @@ def _run_scope_locked(session_id: int) -> None:
             passed = not new_fail  # no NEW failures ⇒ green for this change
         agent_runner.log(rid, "success" if passed else ("warn" if passed is None else "error"),
                          f"Tests: {'passed' if passed else ('no suite/deps' if passed is None else 'failures')}")
+        # Fast path: the triaged-trivial change verified through the deterministic
+        # gate (suite ran, zero new failures) and the diff is as small as triaged
+        # — skip the paid LLM QA + Review passes with explicit verdicts stamped.
+        if attempt == 0 and fast_candidate and passed is True and not res["error"]:
+            n_files, n_lines = _diff_stats(diff)
+            if n_files <= _FAST_PATH_MAX_FILES and n_lines <= _FAST_PATH_MAX_LINES:
+                qa_text = (
+                    "VERDICT: PASS — FAST PATH (task triaged trivial: one ticket, grep-pinned "
+                    f"localization). Deterministic test gate green: suite ran with zero new "
+                    f"failures; diff touches {n_files} source file(s), ~{n_lines} changed "
+                    "line(s). LLM QA was skipped for this delivery.")
+                rev_text = (
+                    "FAST PATH: code review skipped — trivial, fully-localized change verified "
+                    "by the deterministic test gate (see QA verdict). This diff was NOT "
+                    "LLM-reviewed.")
+                _update_all(ids, qa_summary=qa_text, review_summary=rev_text)
+                agent_runner.set_model(rid, "deterministic-gate")
+                agent_runner.log(rid, "success",
+                                 f"Fast path: skipping LLM QA + Review (trivial task, suite green, "
+                                 f"{n_files} file(s)/{n_lines} line(s)) — saved the QA+Review gate cost")
+                agent_runner.finish_run(rid, rep, t0)
+                break
         qa = _qa_agent(f"scope-{session_id}", scope_title, all_criteria, diff, test_out,
                        agent_runner.logger_for(rid))
         agent_runner.set_model(rid, _qa_label())

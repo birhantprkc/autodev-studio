@@ -147,6 +147,11 @@ FIELDS: dict[str, Spec] = {
     "max_revision_rounds": Spec("pipeline", "Max revise rounds",
                                 "If QA fails or Review requests changes, feedback goes back to Dev and "
                                 "QA+Review re-run — up to this many times.", type="int", min=0, max=6),
+    "fast_path_enabled": Spec("pipeline", "Trivial-task fast path",
+                              "Skip the paid LLM QA + Review passes when a scope is deterministically "
+                              "trivial (one ticket, ≤2 grep-pinned files) AND the change passes the "
+                              "test gate with zero new failures and a small diff. Any doubt falls "
+                              "back to the full QA+Review loop.", type="bool"),
     "dev_max_rounds": Spec("pipeline", "Dev loop rounds",
                            "Max model calls per ticket inside the Dev agent (edit, then verify rounds).",
                            type="int", min=1, max=10),

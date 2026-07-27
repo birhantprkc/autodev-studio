@@ -232,6 +232,16 @@ class Settings(BaseSettings):
     # up to this many rounds before the pipeline gives up and surfaces the state.
     max_revision_rounds: int = 2
 
+    # Trivial-task fast path. The pipeline's fixed PM+QA+Review floor (~$0.14 in
+    # the benchmarks) makes very cheap greppable edits cost more than a cold
+    # `claude -p`. When a scope is deterministically trivial (one ticket, small
+    # grep-pinned localization) AND the Dev change verifies through the
+    # deterministic test gate (runnable suite, zero new failures) with a small
+    # non-test diff, skip the paid LLM QA + Review passes and stamp an explicit
+    # fast-path verdict instead. Any doubt — no runnable suite, new failures,
+    # a bigger diff than triaged — falls through to the full QA+Review loop.
+    fast_path_enabled: bool = True
+
     # PM agent (agentic retrieval loop, modeled on oxygen/PM_agent): max on-demand
     # knowledge-retrieval rounds the PM may run within a single turn before it must
     # answer / ask / draft. Bootstrap (repository+architecture+modules) is loaded

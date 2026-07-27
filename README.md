@@ -165,8 +165,11 @@ already have logged in shows up as **installed** (one-click-install the rest), a
 
 ### Other ways to run
 - **Docker** — `docker compose up --build`, then open http://localhost:8017
-- **Installable package** — `pip install -e ".[semantic]"` then `autodev` (drop
-  `[semantic]` for the zero-dependency TF-IDF fallback; run `autodev --help` for flags)
+- **Installable package** — `pip install -e ".[semantic,treesitter]"` then `autodev`
+  (`[semantic]` = local embeddings, drop it for the zero-dependency TF-IDF fallback;
+  `[treesitter]` = exact parse trees for JS/TS/Go/Rust/Java/Ruby symbol maps and
+  edit-time parse gates, drop it for the built-in regex extractors;
+  run `autodev --help` for flags)
 
 ### Try it
 1. **Knowledge** → paste a public Git URL → *Build knowledge base* → *Set active*.

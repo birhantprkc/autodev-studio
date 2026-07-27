@@ -5,14 +5,18 @@ by best score, then do a single capped hop through each hit's `related` links
 (expanded docs are score-penalised). Returns a compact, readable digest the PM
 agent can reason over — architecture + the most relevant modules/features/files.
 
-Everything degrades gracefully: if the semantic stack or the knowledge index is
-missing, the retrieval functions return "" and callers fall back to chunk RAG.
+Everything degrades gracefully: without the semantic stack (tfidf mode, or
+fastembed/qdrant not installed) retrieval falls back to a pure-Python TF-IDF
+ranking over the same stored docs — lower fidelity, same shape. With no
+knowledge at all, the retrieval functions return "" and callers degrade.
 """
 
 from __future__ import annotations
 
 import logging
+import math
 import re
+from collections import Counter
 
 from ...config import settings
 from .. import git_ops, local_rag
@@ -116,24 +120,77 @@ def _search_domain(repo_url: str, domain: str, vector: list[float], k: int) -> l
     return [(h.payload.get("id", ""), float(h.score)) for h in hits if h.payload]
 
 
+_TFIDF_TOKEN_RE = re.compile(r"[a-z0-9_]{2,}")
+
+
+def _tfidf_scores(repo_url: str, query: str, domains: list[str],
+                  per_domain_k: int) -> dict[str, tuple[KnowledgeDocument, float]]:
+    """Pure-Python TF-IDF + cosine over the stored docs — the retrieval path for
+    tfidf mode (and when fastembed/qdrant aren't installed). Same doc corpus and
+    result shape as the dense path, so callers can't tell the tiers apart.
+    ~100-200 docs per repo, so scoring in-process per query is cheap."""
+    from .domains import domain_of
+
+    wanted = set(domains)
+    docs = [d for d in store.load_all(repo_url) if domain_of(d.type) in wanted]
+    if not docs:
+        return {}
+
+    def toks(text: str) -> list[str]:
+        return _TFIDF_TOKEN_RE.findall(text.lower())
+
+    corpus = [toks(indexer.build_retrieval_text(d)) for d in docs]
+    df: Counter = Counter()
+    for c in corpus:
+        df.update(set(c))
+    n = len(corpus)
+
+    def vec(tokens: list[str]) -> dict[str, float]:
+        tf = Counter(tokens)
+        return {t: (1 + math.log(c)) * math.log(1 + n / (df.get(t) or n))
+                for t, c in tf.items()}
+
+    def cos(a: dict[str, float], b: dict[str, float]) -> float:
+        num = sum(a[t] * b[t] for t in a.keys() & b.keys())
+        den = (math.sqrt(sum(v * v for v in a.values()))
+               * math.sqrt(sum(v * v for v in b.values())))
+        return num / den if den else 0.0
+
+    q = vec(toks(query))
+    per_domain: dict[str, list[tuple[KnowledgeDocument, float]]] = {}
+    for doc, c in zip(docs, corpus, strict=False):
+        score = cos(q, vec(c))
+        if score > 0:
+            per_domain.setdefault(domain_of(doc.type), []).append((doc, score))
+    results: dict[str, tuple[KnowledgeDocument, float]] = {}
+    for hits in per_domain.values():  # per-domain cap mirrors the dense path
+        hits.sort(key=lambda x: -x[1])
+        for doc, score in hits[:per_domain_k]:
+            results[doc.id] = (doc, score)
+    return results
+
+
 def retrieve(repo_url: str, query: str, *, domains: list[str] | None = None,
              per_domain_k: int = 3) -> list[tuple[KnowledgeDocument, float]]:
-    """Return scored knowledge documents for `query`, best-score-first."""
-    if not query.strip() or not available(repo_url) or not local_rag.semantic_available():
+    """Return scored knowledge documents for `query`, best-score-first.
+    Dense (Qdrant) when the semantic stack is up; TF-IDF fallback otherwise."""
+    if not query.strip() or not available(repo_url):
         return []
-    vector = local_rag.embed_text(query)
     domains = domains or DOMAINS
 
-    scores: dict[str, float] = {}
-    for domain in domains:
-        for doc_id, score in _search_domain(repo_url, domain, vector, per_domain_k):
-            scores[doc_id] = max(scores.get(doc_id, 0.0), score)
-
-    results: dict[str, tuple[KnowledgeDocument, float]] = {}
-    for doc_id, score in scores.items():
-        doc = store.load(repo_url, doc_id)
-        if doc is not None:
-            results[doc_id] = (doc, score)
+    if local_rag.semantic_available():
+        vector = local_rag.embed_text(query)
+        scores: dict[str, float] = {}
+        for domain in domains:
+            for doc_id, score in _search_domain(repo_url, domain, vector, per_domain_k):
+                scores[doc_id] = max(scores.get(doc_id, 0.0), score)
+        results: dict[str, tuple[KnowledgeDocument, float]] = {}
+        for doc_id, score in scores.items():
+            doc = store.load(repo_url, doc_id)
+            if doc is not None:
+                results[doc_id] = (doc, score)
+    else:
+        results = _tfidf_scores(repo_url, query, domains, per_domain_k)
 
     # One-hop related expansion (capped, penalised).
     expansions = 0
@@ -208,9 +265,9 @@ def answer(repo_url: str, messages: list[dict], *, timeout: int = 120) -> str:
         context_parts.append(block)
     context = "\n\n".join(context_parts)
 
-    from .. import llm
+    from .. import llm, providers
 
-    if settings.openai_api_key:
+    if providers.can_chat(settings.knowledge_provider):
         system = (
             "You are a code knowledge-base assistant. Answer the question using ONLY the "
             "structured repository knowledge provided (architecture, modules, features, "
