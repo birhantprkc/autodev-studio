@@ -63,6 +63,27 @@ beat a cold `claude -p` on every task it localized well, by 7% to 75%:**
 
 ---
 
+## Any model on any stage — and no API keys if you don't want them
+
+The knowledge base is what makes it *cheap*. This is what makes it **different from a pack of
+skills or subagents**: every stage of the pipeline picks its own provider **and** model, live
+from the UI. **Claude plans, Codex writes, GPT reviews** — mix vendors however you like. And
+because the reviewer runs a *different model family* than the author, no model gets to
+rubber-stamp its own work (a documented failure mode of same-model LLM judges).
+
+And you don't need a drawer full of API keys for any of it. The coding stages — and the
+planning ones — run **natively on the agents you already pay for**: Claude Code, Codex,
+Cursor, Aider, or Gemini CLI, driven headless through **their own login**. Point a stage at
+Claude Code or Codex and it just uses your existing subscription and plan — no per-token API
+billing, no keys to manage. Settings auto-detects which CLIs are on your machine, shows the
+version, and one-click-installs the ones that aren't.
+
+> A skill pack lives *inside* one vendor's agent and runs one vendor's model everywhere.
+> AutoDev Studio runs *across* them — a different model per stage, on the logins you already
+> have.
+
+---
+
 ## Who this is for: the economics of a one-time knowledge base
 
 A cold coding agent pays the **localization tax on every single task** — it re-reads the
@@ -120,42 +141,40 @@ which is to say, most of what a team actually does.
 
 ### Prerequisites
 - **Python 3.11+** and **git**
-- At least one LLM key — **any** provider works: the native Anthropic API, or any
-  OpenAI-compatible endpoint (OpenAI, Groq, Gemini, xAI, OpenRouter, a local Ollama…).
-  The defaults target Groq's **free tier**, so you can run the whole thing for $0.
-- *Optional:* the **Claude Code CLI** authenticated (best Dev/Review quality; falls
-  back to the OpenAI path without it) · the **`gh`** CLI (only to open real PRs)
+- **One** way to power the agents — you don't need all of them, or even an API key:
+  - an **already-logged-in coding CLI** — Claude Code, Codex, Cursor, or Gemini CLI —
+    used via its own subscription, **no API key needed**; **or**
+  - **any LLM API key** — the native Anthropic API, or any OpenAI-compatible endpoint
+    (OpenAI, Groq, Gemini, xAI, OpenRouter, a local Ollama). The defaults target Groq's
+    **free tier**, so you can run the whole thing for **$0**.
+- *Optional:* the **`gh`** CLI (only needed to open real PRs).
 
-### Option A — one command
-
-```bash
-cp .env.example .env       # add an API key
-./run.sh                   # creates a venv, installs, starts on :8017
-```
-
-### Option B — Docker
+### Run it (one command)
 
 ```bash
-OPENAI_API_KEY=sk-... docker compose up --build
+git clone https://github.com/krishagarwal314/autodev-studio
+cd autodev-studio
+cp .env.example .env       # optional — add a key, or skip it and use a CLI login
+./run.sh                   # creates a venv, installs, and starts http://localhost:8017
 ```
 
-### Option C — manual (installable package)
+Sign in as `admin` with the one-time password printed in the log on first boot (or set
+`ADMIN_PASSWORD` in `.env`), then head to **Settings → Connections**: any coding CLI you
+already have logged in shows up as **installed** (one-click-install the rest), and the
+**Agent models** tab lets you assign a provider + model per stage.
 
-```bash
-pip install -e ".[semantic]"   # omit [semantic] to use the TF-IDF fallback
-autodev                        # starts the server (see `autodev --help`)
-```
-
-Then open **http://localhost:8017** (API docs at `/docs`). Sign in as `admin` with
-the one-time password printed in the server log on first boot (or set `ADMIN_PASSWORD`
-in `.env`).
+### Other ways to run
+- **Docker** — `docker compose up --build`, then open http://localhost:8017
+- **Installable package** — `pip install -e ".[semantic]"` then `autodev` (drop
+  `[semantic]` for the zero-dependency TF-IDF fallback; run `autodev --help` for flags)
 
 ### Try it
 1. **Knowledge** → paste a public Git URL → *Build knowledge base* → *Set active*.
-2. **Scope Chat** → describe a feature; answer the PM agent until it locks the scope →
+2. **Settings → Agent models** → point each stage at a provider/model — an installed CLI
+   (no key) or an API model. Try Claude Code for Dev and a different family for Review.
+3. **Scope Chat** → describe a feature; answer the PM agent until it locks the scope →
    *Draft tickets*.
-3. **Board** → approve a ticket → *Run* → watch Dev → QA → Review → PR stream live.
-4. **Settings** → set keys, pick a model per stage, tune the revise loop — all live.
+4. **Board** → approve a ticket → *Run* → watch Dev → QA → Review → PR stream live.
 5. **Demo mode is on by default**, so the PR stage is a dry-run. Turn it off (and
    authenticate `gh`) only for a repo you own.
 
@@ -202,20 +221,13 @@ usable by more than its author:
   analysis and let the LLM supply only interpretation — so the map the agents
   navigate by is anchored to the real code.
 
-### Mix providers per stage — the part skills can't do
+### Cross-provider review, on purpose
 
-Adding skills or subagents to a coding agent is useful, but that agent still runs **one
-vendor's model everywhere.** Here **every stage picks its own provider and model**, set live
-from the UI — and Dev/Review can be **any headless coding CLI** (Claude Code, Codex, Cursor,
-Aider, Gemini CLI) *or* any API model. So Claude can plan, Codex can code, and GPT can review.
-
-**No API keys required for the CLIs** — they sign in with their own login, so you plug in your
-existing **Claude Code** or **Codex / ChatGPT** subscription and run the whole pipeline on
-plans you already pay for, not metered API billing.
-
-It matters most at review: LLM-as-judge research shows a model tends to favor its *own* output
-(self-preference bias), so the reviewer is deliberately a **different model family** than the
-author — a cross-check a single-vendor skill setup structurally can't give you.
+Because each stage can run a different provider (the *Any model on any stage* section above),
+the reviewer is deliberately a **different model family than the author.** LLM-as-judge
+research shows a model tends to favor its *own* output (self-preference bias), so a same-model
+setup rubber-stamps its own work — running the review across vendors is a cross-check a
+single-agent skill pack structurally can't give you.
 
 ### Keeping the knowledge base fresh, cheaply
 
