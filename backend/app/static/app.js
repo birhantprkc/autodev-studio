@@ -21,6 +21,10 @@ function md(s) {
 const node = (html) => { const t = document.createElement("template"); t.innerHTML = html.trim(); return t.content.firstElementChild; };
 const setText = (id, txt) => { const e = document.getElementById(id); if (e) e.textContent = txt; };
 const fmtCost = (c) => "$" + (c || 0).toFixed(2);
+// A backend that reports tokens but not a dollar cost (Codex, Cursor) flags
+// cost_unknown: show "n/a" (or a starred figure for a mixed total), never a
+// fake $0.00 that reads as free.
+const fmtCostU = (c, unknown) => (unknown ? (c ? fmtCost(c) + "*" : "n/a") : fmtCost(c));
 const fmtTok = (t) => (t || 0).toLocaleString();
 const fmtWhen = (iso) => iso ? new Date(iso).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
 
@@ -992,7 +996,7 @@ function renderCosts(data, reload) {
   const totals = $("#cost-totals");
   totals.innerHTML = "";
   for (const [l, v, s] of [
-    ["Total cost", fmtCost(data.totals.cost), "usd"],
+    ["Total cost", fmtCostU(data.totals.cost, data.totals.cost_unknown), "usd"],
     ["Tokens in", fmtTok(data.totals.tokens_in), "input"],
     ["Tokens out", fmtTok(data.totals.tokens_out), "output"],
     ["Tickets", data.totals.tickets, "tracked"],
@@ -1005,6 +1009,11 @@ function renderCosts(data, reload) {
   }
   const box = $("#cost-scopes");
   box.innerHTML = "";
+  if (data.totals.cost_unknown) {
+    box.appendChild(node(`<div class="small faint" style="margin-bottom:8px">
+      * some backends (Codex, Cursor) report tokens but not a dollar cost, so
+      "n/a" or a starred figure means the cost wasn't reported — not that it was free.</div>`));
+  }
   if (!data.scopes.length) {
     box.appendChild(node(`<div class="empty">${icon("coins", 24)}<div class="e-title">No spend yet</div>
       <div class="e-sub">Costs appear here as the PM scopes work and the pipeline runs — every token is accounted per ticket, per agent.</div></div>`));
@@ -1015,13 +1024,13 @@ function renderCosts(data, reload) {
     const rows = s.tickets.map((t) => {
       const cells = agents.map((a) => {
         const c = t.by_agent[a];
-        return `<td class="num small ${c ? "" : "faint"}">${c ? fmtCost(c.cost) : "·"}</td>`;
+        return `<td class="num small ${c ? "" : "faint"}">${c ? fmtCostU(c.cost, c.cost_unknown) : "·"}</td>`;
       }).join("");
       return `<tr class="clickable" data-ticket="${t.id}">
         <td class="mono small" style="color:var(--accent-strong)">${esc(t.key)}</td>
         <td class="truncate" style="max-width:260px">${esc(t.title)}</td>
         ${cells}
-        <td class="num" style="font-weight:600">${fmtCost(t.cost)}</td>
+        <td class="num" style="font-weight:600">${fmtCostU(t.cost, t.cost_unknown)}</td>
         <td class="num small faint">${fmtTok(t.tokens)}</td>
       </tr>`;
     }).join("");
