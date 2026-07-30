@@ -316,16 +316,16 @@ def install(cwd: str, repo: str) -> str:
         _TOKENS[token] = (repo, str(root))
         script = d / f"{_SHIM_NAME}.py"
         script.write_text(_SHIM.format(backend=_backend_root(), repo=repo, cwd=str(root),
-                                       url=_base_url(), token=token))
+                                       url=_base_url(), token=token), encoding="utf-8")
         if os.name == "nt":
             shim = d / f"{_SHIM_NAME}.cmd"
             shim.write_text(_WINDOWS_LAUNCHER.format(python=sys.executable,
-                                                     script=script))
+                                                     script=script), encoding="utf-8")
             command = f"{_SHIM_DIR}/{_SHIM_NAME}.cmd"
         else:
             shim = d / _SHIM_NAME
             shim.write_text(_LAUNCHER.format(python=shlex.quote(sys.executable),
-                                             script=shlex.quote(str(script))))
+                                             script=shlex.quote(str(script))), encoding="utf-8")
             command = f"{_SHIM_DIR}/{_SHIM_NAME}"
         shim.chmod(0o755)
         exclude = root / ".git" / "info" / "exclude"
