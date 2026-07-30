@@ -30,23 +30,28 @@ def _latest_done_job() -> str | None:
 
 
 def retrieve(query: str, use_case: str = "task-breakdown", budget: int | None = None,
-             repo_url: str | None = None) -> str:
+             repo_url: str | None = None, plan_symbols: list[str] | None = None) -> str:
     """Return a compact, use-case-scoped context slice (or "" if unavailable).
 
     use_case ∈ story-breakdown | task-breakdown | architecture | ui-test |
     unit-test | design | default — each has its own token budget.
+
+    `plan_symbols` are a Planner's verified targets when one has run; they steer
+    the reranker so the slice leads with the code the plan commits to.
     """
     if not settings.precision_retrieval or not query.strip():
         return ""
 
-    # Default path: the structured-knowledge retriever (architecture / modules /
-    # features / files) over this repo — no raw-code chunks.
+    # Default path: the retrieval pipeline — fused hybrid search, call-graph
+    # expansion, lexical refinement, rerank, plus exact code hits and the
+    # relevant cross-run delivery notes for this repo.
     if not settings.use_deep_analysis:
         if not repo_url:
             return ""
         from .knowledge import retriever as knowledge_retriever
 
-        return knowledge_retriever.scope_context(repo_url, query)
+        return knowledge_retriever.scope_context(repo_url, query,
+                                                 plan_symbols=plan_symbols)
 
     # Optional external Deep Analysis service.
     job = _latest_done_job()

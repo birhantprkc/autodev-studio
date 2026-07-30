@@ -7,7 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
 
-# Project root (AGENTS-SDLC/.env) — read regardless of launch directory.
+# Project root (CodeJury/.env) — read regardless of launch directory.
 _ENV_FILE = str(Path(__file__).resolve().parents[3] / ".env")
 
 

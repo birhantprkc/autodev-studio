@@ -9,7 +9,7 @@ keep you updated on the fix.
 
 ## Scope and operational notes
 
-AutoDev Studio runs LLM agents that **clone repositories and execute code and tests
+CodeJury runs LLM agents that **clone repositories and execute code and tests
 from them**. That is inherent to what it does, and it shapes how it should be deployed:
 
 - **Treat any instance as sensitive.** It holds provider API keys and can push commits
@@ -28,7 +28,7 @@ from them**. That is inherent to what it does, and it shapes how it should be de
 - The first-boot `admin` password is generated randomly (or taken from
   `ADMIN_PASSWORD`) — there is no guessable default.
 - API keys saved from the Settings screen are encrypted at rest with Fernet, keyed by
-  `AUTODEV_SECRET_KEY` or a generated `.secret.key` file (chmod 600).
+  `CODEJURY_SECRET_KEY` or a generated `.secret.key` file (chmod 600).
 - `.env`, `.secret.key`, and `*.db` are gitignored. **Never commit them.** If you ever
   do, rotate the exposed credentials immediately — removing them in a later commit is
   not enough.

@@ -32,18 +32,42 @@ the description, never in a criterion (a wrong structural claim there becomes an
 unsatisfiable requirement the reviewer enforces)."""
 
 
-def _hints_block(affected_files: list[str] | None, target_symbols: list[str] | None) -> str:
-    if not affected_files and not target_symbols:
+def _hints_block(affected_files: list[str] | None, target_symbols: list[str] | None,
+                 tools_cmd: str = "", has_plan: bool = False) -> str:
+    """Bare file/symbol pins, for a run with no plan.
+
+    When a Planner ran, this is redundant — its block carries the same pins with
+    the reasoning, the blast radius and the tests attached, and repeating them
+    here without that context invites the agent to treat a verified location as
+    another guess to second-guess."""
+    if has_plan or (not affected_files and not target_symbols):
         return ""
-    lines = ["Localization hints from the PM agent — treat as HINTS, not facts. The PM",
-             "works from summaries and sometimes names the wrong file or invents symbols.",
-             "VERIFY each hint (grep for the symbol / read the file) before editing; when",
-             "a hint is wrong, find the real location yourself and use that instead."]
+    verify = (f"VERIFY each hint before editing (`{tools_cmd} lookup <Symbol>`, "
+              f"`{tools_cmd} search \"<mechanism>\"`)"
+              if tools_cmd else "VERIFY each hint (search for the symbol / read the file) before editing")
+    lines = ["Localization hints — a HYPOTHESIS, not facts. No planner ran on this",
+             "delivery, so these come from summaries and may name the wrong file or",
+             f"invent symbols. {verify}. You are EXPECTED to disagree when the evidence",
+             "says otherwise: if the behavior lives somewhere else, implement it THERE and",
+             "state in your summary which hint was wrong and what the real location is.",
+             "Implementing a change in the wrong file because the hint said so is a failed",
+             "work order."]
     if affected_files:
         lines.append("  files: " + ", ".join(affected_files[:8]))
     if target_symbols:
         lines.append("  symbols: " + ", ".join(target_symbols[:12]))
     return "\n" + "\n".join(lines) + "\n"
+
+
+def _relocalize_hint(tools_cmd: str = "") -> str:
+    """What to do when a pin is missing or the hints look wrong — query the
+    repository index if it's installed, else fall back to one grep."""
+    if not tools_cmd:
+        return "At most ONE extra grep if a pin is missing."
+    return (f"When a pin is missing — or the code you find doesn't actually produce the "
+            f"behavior in the work order — query the index (`{tools_cmd} search`, "
+            f"`{tools_cmd} lookup`, `{tools_cmd} callers`) instead of exploring. It is "
+            f"cheaper than reading files and it is the right way to overrule a wrong hint.")
 
 
 def _test_block(test_cmd: str = "") -> str:
@@ -59,20 +83,36 @@ def _test_block(test_cmd: str = "") -> str:
 
 def dev(task_key: str, title: str, description: str, criteria: list[str], context: str = "",
         affected_files: list[str] | None = None, target_symbols: list[str] | None = None,
-        test_cmd: str = "", verified: str = "") -> str:
+        test_cmd: str = "", verified: str = "", tools_cmd: str = "", plan: str = "") -> str:
     crit = "\n".join(f"- {c}" for c in criteria) or "- (use your judgment)"
     ctx = (f"\nRepository knowledge (retrieved, may be incomplete — verify against the code):\n"
            f"{context.strip()[:6000]}\n" if context.strip() else "")
     ver = f"\n{verified.strip()}\n" if verified.strip() else ""
+    # The plan goes ahead of the retrieved knowledge: it is the decided approach,
+    # and the rest is supporting material for carrying it out.
+    plan_block = f"\n{plan.strip()}\n" if plan.strip() else ""
+    described = ("Description (context for the plan above; any file or line number named "
+                 "here is prose, not a verified pin — the plan's pins are the verified ones):"
+                 if plan.strip() else
+                 "Description (WHAT to achieve is binding; any file, symbol or line number "
+                 "named in here is a guess from summaries and is NOT — verify it like the "
+                 "hints above, and if the behaviour lives elsewhere, implement it there and "
+                 "say so):")
+    from .knowledge import tools as _tools
+    # The tools block goes FIRST, ahead of the (large) plan, retrieved knowledge
+    # and verified-locations dumps. Live run: with it placed after them — tens of
+    # thousands of characters in — the Dev agent never once invoked the tools and
+    # fell back to its own `grep`, which sees text but not call structure.
     return f"""You are the Dev agent in an autonomous SDLC pipeline. Implement this work order by editing files in the current repository working copy (a dedicated branch — edits are expected). Your cwd IS the repo root: use relative paths everywhere.
-{ctx}{ver}{_hints_block(affected_files, target_symbols)}
+{_tools.prompt_block(tools_cmd)}{plan_block}{ctx}{ver}{_hints_block(affected_files, target_symbols, tools_cmd, has_plan=bool(plan.strip()))}
 Work order {task_key}: {title}
-Description: {description}
+{described}
+{description}
 Acceptance criteria:
 {crit}
 
 How to work — BE TOKEN-EFFICIENT, every extra read costs real money:
-1. START from the verified locations above (they were grep-computed against this exact working copy). If full file contents are included there, that IS the current file — do not re-read it with a tool call, edit directly from what's shown. For anything not already shown, go straight to file:line pins with targeted reads (offset/limit around the pin). Do NOT explore with find/ls or read whole large files when a pinned region or included content already answers the question; at most ONE extra grep if a pin is missing.
+1. START from the plan and the verified locations above (computed against this exact working copy). If full file contents are included there, that IS the current file — do not re-read it with a tool call, edit directly from what's shown. For anything not already shown, go straight to file:line pins with targeted reads (offset/limit around the pin). Do NOT explore with find/ls or read whole large files when a pinned region or included content already answers the question. {_relocalize_hint(tools_cmd)}
 2. Make the smallest correct, surgical change. DIFF DISCIPLINE: touch only lines the work order requires. Do NOT refactor, reformat, merge statements, rewrite type hints, rename, or otherwise "improve" surrounding code — even when you see something better. Every changed line outside the work order is scope creep the reviewer will flag and a human must re-read. If you notice a worthwhile unrelated improvement, mention it in your summary instead of making it.
 3. Wire everything END-TO-END: a new flag/option must be registered where the others are, threaded through to the code that consumes it, and observable in behavior. Before finishing, check `git diff` — every acceptance criterion actually connected, not just defined.
 4. {_test_block(test_cmd)}
@@ -82,15 +122,18 @@ When done, summarize in a few sentences: what changed, in which files, and how y
 
 
 def revise(task_key: str, title: str, criteria: list[str], review_text: str,
-           qa_text: str, context: str = "", test_cmd: str = "", verified: str = "") -> str:
+           qa_text: str, context: str = "", test_cmd: str = "", verified: str = "",
+           tools_cmd: str = "", plan: str = "") -> str:
     """Dev prompt for a revision round: fix the already-committed change to
     address reviewer + QA feedback."""
     crit = "\n".join(f"- {c}" for c in criteria) or "- (use your judgment)"
     ctx = (f"\nRepository knowledge (retrieved, may be incomplete — verify against the code):\n"
            f"{context.strip()[:5000]}\n" if context.strip() else "")
     ver = f"\n{verified.strip()}\n" if verified.strip() else ""
+    plan_block = f"\n{plan.strip()}\n" if plan.strip() else ""
+    from .knowledge import tools as _tools
     return f"""You are the Dev agent doing a REVISION round in an autonomous SDLC pipeline. Your earlier change is already committed on the current branch — run `git diff origin/HEAD...HEAD` (or `git log -p`) to see it, then improve it in place to address the feedback below. Your cwd IS the repo root: use relative paths, targeted reads (offset/limit), and no find/ls exploration — every extra read costs real money.
-{ctx}{ver}
+{_tools.prompt_block(tools_cmd)}{plan_block}{ctx}{ver}
 Task {task_key}: {title}
 Acceptance criteria:
 {crit}
@@ -131,18 +174,29 @@ Calibrate the verdict — every CHANGES REQUESTED triggers a full paid Dev+QA+Re
 Give a concise review: does it meet the criteria? List concrete issues or risks (or state it's approved). End with a one-line verdict: APPROVED or CHANGES REQUESTED."""
 
 
-def scope_pr_body(scope_title: str, subtasks: list[dict], qa_summary: str) -> str:
+def scope_pr_body(scope_title: str, subtasks: list[dict], qa_summary: str,
+                  review_summary: str = "") -> str:
+    """PR description for a delivered scope. The review section carries the
+    jury's verdict verbatim — a human merging this should see what the panel
+    found (and, when a juror abstained, what went unreviewed) without opening
+    the app."""
     items = "\n".join(f"- **{t['key']}** {t['title']}" for t in subtasks)
-    return f"""## {scope_title}
+    review = f"\n### Code review\n{review_summary[:9000]}\n" if review_summary.strip() else ""
+    # An unapproved delivery must say so in the first line a reviewer sees, not
+    # only inside the review section further down.
+    unapproved = ("> ⚠️ **This PR was NOT approved by the review panel.** Revision rounds "
+                  "ran out with findings outstanding — see the code review below before "
+                  "merging.\n\n" if "DELIVERED WITHOUT APPROVAL" in review_summary else "")
+    return f"""{unapproved}## {scope_title}
 
-One PR implementing the full scope as {len(subtasks)} subtasks (Dev = Claude/OpenAI, QA = OpenAI, Review = Claude/OpenAI):
+One PR implementing the full scope as {len(subtasks)} subtasks:
 
 {items}
 
 ### QA summary
 {qa_summary[:8000]}
-
-🤖 Opened by **{settings.agent_git_name}** — the AutoDev Studio agent pipeline (scope-level)."""
+{review}
+🤖 Opened by **{settings.agent_git_name}** — the CodeJury agent pipeline (scope-level)."""
 
 
 def pr_body(task_key: str, title: str, qa_summary: str) -> str:
@@ -153,7 +207,7 @@ Implemented by the autonomous SDLC agent pipeline (Dev = Claude, QA = OpenAI, Re
 ### QA summary
 {qa_summary[:8000]}
 
-🤖 Opened by **{settings.agent_git_name}** — the AutoDev Studio agent pipeline."""
+🤖 Opened by **{settings.agent_git_name}** — the CodeJury agent pipeline."""
 
 
 REVIEW_SYSTEM = (

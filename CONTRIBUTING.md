@@ -1,19 +1,19 @@
 # Contributing
 
-Thanks for your interest in AutoDev Studio. Contributions of all sizes are welcome —
+Thanks for your interest in CodeJury. Contributions of all sizes are welcome —
 bug reports, docs fixes, and features alike.
 
 ## Getting set up
 
 ```bash
 git clone https://github.com/krishagarwal314/autodev-studio
-cd autodev-studio
+cd codejury
 python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"       # add ,semantic → ".[dev,semantic]" for the embedding stack
+pip install -e ".[dev]"       # add ,treesitter for exact non-Python symbol maps
 cp .env.example .env          # add an API key
 ```
 
-Run the app with `./run.sh` (or `autodev`), and open http://localhost:8017.
+Run the app with `./run.sh` (or `codejury`), and open http://localhost:8017.
 
 ## Before you open a pull request
 

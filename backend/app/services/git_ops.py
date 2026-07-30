@@ -1,6 +1,7 @@
 """Git + gh operations on cloned working copies the agents edit."""
 
 import json
+import logging
 import os
 import re
 import shutil
@@ -15,6 +16,8 @@ from pathlib import Path
 
 from ..config import settings
 from . import lang
+
+logger = logging.getLogger(__name__)
 
 _GITHUB_API = "https://api.github.com"
 
@@ -41,7 +44,11 @@ def repo_lock(repo_url: str):
 def _run(args: list[str], cwd: str | None = None, timeout: int = 600, check: bool = True,
          env: dict | None = None) -> str:
     run_env = {**os.environ, **env} if env else None
-    p = subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=run_env)
+    # errors="replace": git grep/show can emit non-UTF-8 bytes (a latin-1 test
+    # fixture, a binary-ish line). Default strict decoding would crash the whole
+    # call — turning one odd byte in a grepped line into a failed scoping turn.
+    p = subprocess.run(args, cwd=cwd, capture_output=True, text=True, errors="replace",
+                       timeout=timeout, env=run_env)
     if check and p.returncode != 0:
         raise RuntimeError(f"`{' '.join(args)}` failed: {(p.stderr or p.stdout).strip()[:400]}")
     return p.stdout
@@ -67,7 +74,7 @@ def _gh_api(method: str, path: str, token: str | None, body: dict | None = None,
     """Bare GitHub REST call (stdlib urllib, no `gh` dependency). Returns
     (status_code, json_body_or_{}). Raises only on network failure, never on
     non-2xx — callers read the status themselves."""
-    headers = {"Accept": "application/vnd.github+json", "User-Agent": "AutoDev-Studio"}
+    headers = {"Accept": "application/vnd.github+json", "User-Agent": "CodeJury"}
     if token:
         headers["Authorization"] = f"Bearer {token.strip()}"
     data = json.dumps(body).encode() if body is not None else None
@@ -209,54 +216,63 @@ def write_file(path: str, rel: str, content: str) -> None:
     fp.write_text(content, encoding="utf-8")
 
 
-def _grep(path: str, flags: str, pattern: str, pathspec: str, *,
-          fixed: bool = False, ref: str | None = None) -> list[str]:
-    """Run `git grep` and return its lines. With `ref` (e.g. 'origin/master')
-    the search runs against that COMMITTED tree instead of the working copy —
-    essential for anything computed before the pipeline resets the shared
-    clone, which may still sit on a stale agent branch (unmerged code would
-    otherwise look like it exists). The 'ref:' prefix git adds is stripped."""
-    args = ["git", "grep", flags] + (["--fixed-strings"] if fixed else [])
-    args += [pattern] + ([ref] if ref else []) + ["--", pathspec]
-    out = _run(args, cwd=path, check=False, timeout=60)
-    prefix = f"{ref}:" if ref else ""
-    return [l.removeprefix(prefix) for l in out.splitlines() if l.strip()]
+# Lexical search lives in services/search.py (ripgrep). Searching a COMMITTED
+# tree is expressed as a path, not a flag — `ref_worktree` below hands out a
+# checkout pinned at origin's default branch for exactly that.
+
+# One ref worktree per repo, created lazily. Scoping-time retrieval runs OUTSIDE
+# the pipeline's `repo_lock` (it's a chat turn, not a delivery), so two turns on
+# the same repo can race to create or re-point the same checkout.
+_wt_locks: dict[str, threading.Lock] = {}
+_wt_locks_guard = threading.Lock()
 
 
-def grep_definition_files(path: str, name: str, max_files: int = 3,
-                          ref: str | None = None) -> list[str]:
-    """Files that DEFINE symbol `name` (def/class/function/const), via git grep.
-    Empty when the symbol isn't defined anywhere (i.e. likely invented or new)."""
-    esc = re.escape(name)
-    pat = rf"(def|class|function|const|var|let)\s+{esc}\b|^\s*{esc}\s*[:=]"
-    return _grep(path, "-lE", pat, ".", ref=ref)[:max_files]
+def ref_worktree(repo_url: str) -> str:
+    """Path to a read-only checkout pinned at `origin/<default branch>`, or ""
+    when one can't be provided.
+
+    Anything computed BEFORE the pipeline resets the shared clone — PM scoping,
+    ticket grounding, the planner's first look — must not see the working copy,
+    which may still sit on a previous run's agent branch. Code from an unmerged
+    delivery would read as code that exists, and a scope would be locked against
+    it. `git grep <ref>` used to provide that isolation; ripgrep searches
+    directories, so the isolation becomes a second checkout instead: cheap
+    (shares the object store), reused across runs, and re-pointed when origin
+    moves.
+
+    Callers treat "" as 'search the working copy instead' — degraded isolation
+    is better than no search.
+    """
+    main = workdir(repo_url)
+    if not (main / ".git").exists():
+        return ""
+    key = slug(repo_url)
+    with _wt_locks_guard:
+        lock = _wt_locks.setdefault(key, threading.Lock())
+    with lock:
+        try:
+            return _ensure_ref_worktree(str(main), main.parent / f"{key}__ref")
+        except Exception as exc:  # noqa: BLE001 — isolation is a bonus, never a failure
+            logger.warning("ref worktree for %s unavailable: %s", key, exc)
+            return ""
 
 
-def grep_lines(path: str, pattern: str, max_lines: int = 40, pathspec: str = ".",
-               ignore_case: bool = False, ref: str | None = None) -> str:
-    """`git grep -nE pattern` → 'file:line:text' lines (capped). Used as the
-    fallback Dev loop's search tool so it can localize code itself instead of
-    trusting the PM's pins. Invalid patterns just return no matches."""
-    lines = _grep(path, "-niE" if ignore_case else "-nE", pattern, pathspec, ref=ref)
-    body = "\n".join(lines[:max_lines])
-    if len(lines) > max_lines:
-        body += f"\n… ({len(lines) - max_lines} more matches)"
-    return body or "(no matches)"
-
-
-def grep_files(path: str, pattern: str, pathspec: str = ".", max_files: int = 5,
-               ignore_case: bool = False, ref: str | None = None) -> list[str]:
-    """Files matching an extended-regex `pattern` under a git pathspec (git's
-    `*` crosses directory boundaries, so '*test*' means 'any path containing
-    test'). Used to localize the EXISTING tests that exercise a symbol."""
-    return _grep(path, "-liE" if ignore_case else "-lE", pattern, pathspec, ref=ref)[:max_files]
-
-
-def grep_mention_files(path: str, text: str, max_files: int = 3,
-                       ref: str | None = None) -> list[str]:
-    """Files merely CONTAINING `text` (fixed string) — existence check for a
-    symbol/flag without assuming it's a definition."""
-    return _grep(path, "-l", text, ".", fixed=True, ref=ref)[:max_files]
+def _ensure_ref_worktree(main: str, wt: Path) -> str:
+    head = rev_parse(main, f"origin/{default_branch(main)}")
+    if not head:
+        return ""
+    # A linked worktree's .git is a FILE (a gitdir pointer), not a directory.
+    if (wt / ".git").exists():
+        if rev_parse(str(wt), "HEAD") == head:
+            return str(wt)
+        _run(["git", "checkout", "--detach", head], cwd=str(wt), check=False, timeout=300)
+        return str(wt) if rev_parse(str(wt), "HEAD") == head else ""
+    # Stale registration (directory deleted under us) would make `worktree add`
+    # fail with "already registered"; prune first — it is a no-op when clean.
+    _run(["git", "worktree", "prune"], cwd=main, check=False, timeout=60)
+    _run(["git", "worktree", "add", "--detach", str(wt), head],
+         cwd=main, check=False, timeout=600)
+    return str(wt) if (wt / ".git").exists() else ""
 
 
 def rev_parse(path: str, ref: str = "HEAD") -> str:

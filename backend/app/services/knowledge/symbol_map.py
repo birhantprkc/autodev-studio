@@ -8,13 +8,13 @@ cost to build or update, so it can always be kept exactly current with the repo
 
 Consumers:
   * pm_agent.ground_tickets — instant definition lookup instead of one
-    `git grep` subprocess per symbol, plus "did you mean" suggestions.
+    ripgrep subprocess per symbol, plus "did you mean" suggestions.
   * orchestrator._verified_locations — exact file:line pins and per-file
     outlines injected into the Dev prompt, so Dev reads targeted slices
     instead of exploring.
 
 The map is only trusted when its `built_at_sha` matches the working copy the
-caller is on; callers fall back to live `git grep` otherwise.
+caller is on; callers fall back to live ripgrep otherwise.
 """
 
 from __future__ import annotations

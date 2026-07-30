@@ -2,6 +2,7 @@
 availability detection, output parsing per tool, and fail-open behavior."""
 
 import json
+import os
 import stat
 
 import pytest
@@ -11,7 +12,16 @@ REQUIRED_KEYS = {"text", "tokens_in", "tokens_out", "cost", "error"}
 
 
 def _fake_cli(tmp_path, name: str, script: str) -> str:
-    """Drop an executable fake CLI on disk and return its path."""
+    """Drop an executable fake CLI on disk and return its path.
+
+    Shebang dispatch is POSIX-only, so the handful of tests that stand up a fake
+    binary skip on Windows rather than being rewritten around .bat shims. The
+    adapters themselves are portable — they only ever ``subprocess.run`` a
+    resolved path — and every other test in this module covers them without
+    executing anything.
+    """
+    if os.name == "nt":
+        pytest.skip("fake CLIs rely on shebang dispatch (POSIX only)")
     p = tmp_path / name
     # NB: not sys.executable — a shebang path with spaces (this repo's venv) is invalid.
     p.write_text(f"#!/usr/bin/env python3\n{script}")

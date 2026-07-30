@@ -5,7 +5,8 @@ prefixed with ``enc:v1:``. Values without the prefix are treated as plaintext an
 pass through unchanged, so existing rows keep working and are transparently
 re-encrypted the next time they're saved.
 
-The encryption key comes from ``AUTODEV_SECRET_KEY`` (any string — derived into a
+The encryption key comes from ``CODEJURY_SECRET_KEY`` (or the legacy
+``AUTODEV_SECRET_KEY``; any string — derived into a
 Fernet key) or, failing that, a generated key file at the agent root
 (``.secret.key``, chmod 600). If the key is lost, encrypted values simply become
 unreadable (returned empty with a warning) rather than crashing the app.
@@ -35,7 +36,11 @@ def _derive_key(secret: str) -> bytes:
 
 
 def _load_or_create_key() -> bytes:
-    env = os.environ.get("AUTODEV_SECRET_KEY", "").strip()
+    # AUTODEV_SECRET_KEY is the pre-rename name. Still honored as a fallback:
+    # dropping it would make every already-encrypted API key permanently
+    # unreadable on installs that set it.
+    env = (os.environ.get("CODEJURY_SECRET_KEY", "")
+           or os.environ.get("AUTODEV_SECRET_KEY", "")).strip()
     if env:
         return _derive_key(env)
     try:

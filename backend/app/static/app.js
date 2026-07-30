@@ -1,5 +1,5 @@
 // ===========================================================================
-// AutoDev Studio frontend.
+// CodeJury frontend.
 // One file, page modules dispatched from body[data-page]. No frameworks.
 // ===========================================================================
 
@@ -34,25 +34,30 @@ function toast(msg, isError = false) {
   setTimeout(() => t.remove(), 3400);
 }
 
-function confirmDialog({ title, text, confirmLabel = "Confirm", danger = false }) {
+// `bodyNode` turns this into a small form dialog: the caller builds the fields,
+// reads them itself on confirm, and gets the same true/false back.
+function confirmDialog({ title, text = "", confirmLabel = "Confirm", danger = false, bodyNode = null }) {
   return new Promise((resolve) => {
     const root = $("#modal-root");
     const el = node(`
       <div class="modal-backdrop">
         <div class="modal">
           <h3>${esc(title)}</h3>
-          <div class="modal-text">${esc(text)}</div>
+          ${text ? `<div class="modal-text">${esc(text)}</div>` : ""}
+          <div class="modal-body"></div>
           <div class="modal-actions">
             <button class="btn btn-ghost" data-act="no">Cancel</button>
             <button class="btn ${danger ? "btn-danger" : "btn-primary"}" data-act="yes">${esc(confirmLabel)}</button>
           </div>
         </div>
       </div>`);
+    if (bodyNode) el.querySelector(".modal-body").appendChild(bodyNode);
     const done = (v) => { el.remove(); resolve(v); };
     el.addEventListener("click", (e) => { if (e.target === el) done(false); });
     el.querySelector('[data-act="no"]').addEventListener("click", () => done(false));
     el.querySelector('[data-act="yes"]').addEventListener("click", () => done(true));
     root.appendChild(el);
+    if (bodyNode) el.querySelector("input, select, textarea")?.focus();
   });
 }
 
@@ -68,7 +73,7 @@ const STATE = {
   sessionId: null,   // scope page: selected scope session
 };
 
-const REPO_KEY = "autodev.repo";
+const REPO_KEY = "codejury.repo";
 // Pages that can aggregate across every repo ("All repositories").
 const ALLOWS_ALL = new Set(["board", "agents", "costs"]);
 
@@ -163,7 +168,7 @@ function initRepoSwitcher() {
 
 // --- Shell: theme, logout, nav icons, metrics ----------------------------------
 function initShell() {
-  $("#brand-mark") && ($("#brand-mark").innerHTML = icon("spark", 15));
+  $("#brand-mark") && ($("#brand-mark").innerHTML = icon("codejury", 16));
   $$(".nav-item[data-icon]").forEach((a) => a.insertAdjacentHTML("afterbegin", icon(a.dataset.icon, 16)));
 
   const themeBtn = $("#theme-toggle");
@@ -173,7 +178,7 @@ function initShell() {
     themeBtn.addEventListener("click", () => {
       const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
       document.documentElement.dataset.theme = next;
-      localStorage.setItem("autodev.theme", next);
+      localStorage.setItem("codejury.theme", next);
       paintTheme();
     });
   }
@@ -325,6 +330,160 @@ function renderDrawer(d, tab) {
   });
 }
 
+// --- Jury verdict panel -----------------------------------------------------
+// Blocking findings first, then observations, then what the foreperson threw
+// out — the dismissals matter: they're the evidence the panel is filtering
+// noise rather than just generating more of it.
+
+function juryFindingHtml(f, cls) {
+  const who = (f.raised_by || []).join(", ");
+  const meta = [
+    f.severity,
+    f.confidence != null ? `${Math.round(f.confidence * 100)}% confidence` : "",
+    who ? `raised by ${who}` : "",
+    f.agreement && f.agreement !== "single" ? f.agreement : "",
+  ].filter(Boolean).join(" · ");
+  const body = [
+    f.why_it_matters, f.suggestion ? `Fix: ${f.suggestion}` : "",
+    f.reason ? `Dismissed: ${f.reason}` : "",
+  ].filter(Boolean).join("\n");
+  return `<div class="jv-finding ${cls}">
+    <div class="jv-title">${esc(f.title)}${f.location ? ` <span class="mono faint">${esc(f.location)}</span>` : ""}</div>
+    <div class="jv-meta">${esc(meta)}</div>
+    ${body ? `<div class="jv-body" style="white-space:pre-wrap">${esc(body)}</div>` : ""}
+  </div>`;
+}
+
+// One juror's own review, verbatim: how it voted, what it said, and every
+// finding it filed — including the ones the foreperson merged or threw out.
+// The synthesis is the decision; this is the evidence behind it, and without it
+// there's no way to tell a panel that agreed from a panel that never spoke.
+const JV_VERDICT = {
+  APPROVE: { label: "approved", cls: "jv-v-ok" },
+  REQUEST_CHANGES: { label: "changes requested", cls: "jv-v-bad" },
+  ABSTAIN: { label: "abstained", cls: "jv-v-abstain" },
+};
+
+function jurorCardHtml(o) {
+  const v = JV_VERDICT[o.verdict] || JV_VERDICT.ABSTAIN;
+  const findings = o.findings || [];
+  const count = findings.length;
+  return `<details class="jv-juror-card ${o.error ? "jv-abstain" : ""}" ${count ? "open" : ""}>
+    <summary>
+      <span class="jv-j-name">${esc(o.name)}</span>
+      <span class="badge ${v.cls}">${v.label}</span>
+      <span class="grow"></span>
+      <span class="small faint">${count ? `${count} finding${count === 1 ? "" : "s"}` : "no findings"}</span>
+      <span class="small faint mono jv-j-model">${esc(o.model_label || o.model || "")}</span>
+    </summary>
+    <div class="jv-j-body">
+      ${o.error
+        ? `<div class="jv-j-error">Did not review — ${esc(o.error)}
+             <div class="small faint" style="margin-top:4px">This perspective was NOT covered on this delivery.</div></div>`
+        : ""}
+      ${o.summary ? `<div class="jv-j-summary">${esc(o.summary)}</div>` : ""}
+      ${findings.map((f) => {
+        const meta = [f.severity,
+          f.confidence != null ? `${Math.round(f.confidence * 100)}% confidence` : ""]
+          .filter(Boolean).join(" · ");
+        return `<div class="jv-finding jv-own">
+          <div class="jv-title">${esc(f.title)}${f.location ? ` <span class="mono faint">${esc(f.location)}</span>` : ""}</div>
+          <div class="jv-meta">${esc(meta)}</div>
+          ${f.evidence ? `<pre class="jv-evidence">${esc(f.evidence)}</pre>` : ""}
+          ${f.why_it_matters ? `<div class="jv-body">${esc(f.why_it_matters)}</div>` : ""}
+          ${f.suggestion ? `<div class="jv-body"><b>Suggested fix:</b> ${esc(f.suggestion)}</div>` : ""}
+        </div>`;
+      }).join("")}
+    </div>
+  </details>`;
+}
+
+// The Planner's plan for this delivery. It is shown ABOVE the diff on purpose:
+// it is what lets a reviewer read the change as "did it do the agreed thing"
+// rather than "does this look plausible", and the pins in it were verified
+// against the code graph before any code was written.
+function planHtml(p) {
+  const steps = (p && p.steps) || [];
+  if (!steps.length) return "";
+  const kindColor = { create: "var(--ok)", delete: "var(--danger)", wire: "var(--accent)" };
+  const stepRows = steps.map((s) => {
+    const bits = [];
+    if (s.files && s.files.length) bits.push(`<div class="small mono faint">${esc(s.files.join(", "))}</div>`);
+    if (s.symbols && s.symbols.length) bits.push(`<div class="small mono">${esc(s.symbols.join("  ·  "))}</div>`);
+    if (s.blast_radius && s.blast_radius.length) {
+      bits.push(`<div class="small muted">${icon("alert", 11)} callers affected: ${esc(s.blast_radius.join("; "))}</div>`);
+    }
+    if (s.existing_tests && s.existing_tests.length) {
+      bits.push(`<div class="small muted">covered by ${esc(s.existing_tests.join(", "))}</div>`);
+    }
+    if (s.verify && s.verify.length) bits.push(`<div class="small muted">done when: ${esc(s.verify.join("; "))}</div>`);
+    return `
+      <div style="padding:8px 0; border-top:1px solid var(--border)">
+        <div class="row small" style="font-weight:650; gap:6px">
+          <span class="badge" style="color:${kindColor[s.edit_kind] || "var(--text-faint)"}">${esc(s.edit_kind || "modify")}</span>
+          <span>${esc(s.intent || "")}</span>
+        </div>
+        ${s.why ? `<div class="small muted" style="margin:2px 0 4px">${esc(s.why)}</div>` : ""}
+        ${bits.join("")}
+      </div>`;
+  }).join("");
+  const notes = [];
+  if (p.risks && p.risks.length) {
+    notes.push(`<div class="small" style="color:var(--warn); margin-top:8px">${icon("alert", 12)} Risks: ${esc(p.risks.join("; "))}</div>`);
+  }
+  if (p.open_questions && p.open_questions.length) {
+    // Unconfirmed by the Planner — a reader must not mistake these for decisions.
+    notes.push(`<div class="small" style="color:var(--warn); margin-top:4px">${icon("alert", 12)} Could not confirm: ${esc(p.open_questions.join("; "))}</div>`);
+  }
+  if (p.unresolved_symbols) {
+    notes.push(`<div class="small muted" style="margin-top:4px">${p.unresolved_symbols} symbol(s) did not exist yet and were to be created.</div>`);
+  }
+  return `
+    <div class="card card-pad" style="margin-bottom:14px">
+      <div class="row" style="margin-bottom:4px">
+        <span class="stat-label">Implementation plan</span>
+        <span class="small faint">${steps.length} step${steps.length === 1 ? "" : "s"} · pins verified against the code graph</span>
+      </div>
+      ${p.summary ? `<div class="small" style="margin-bottom:4px">${esc(p.summary)}</div>` : ""}
+      ${stepRows}
+      ${notes.join("")}
+    </div>`;
+}
+
+function juryVerdictHtml(j) {
+  if (!j || !j.verdict) return "";
+  const ok = j.verdict === "APPROVED";
+  const color = ok ? "var(--ok)" : j.verdict === "INCONCLUSIVE" ? "var(--warn)" : "var(--danger)";
+  const jurors = j.jurors || [];
+  const spoke = jurors.filter((o) => !o.error).length;
+  const sec = (title, items, cls, hint) => items && items.length
+    ? `<div class="jv-sec-head">${title} <span class="faint">(${items.length})</span>
+         ${hint ? `<span class="small faint jv-sec-hint">${hint}</span>` : ""}</div>
+       ${items.map((f) => juryFindingHtml(f, cls)).join("")}` : "";
+
+  return `<div class="card card-pad jv-card" style="border-color:${color}; margin-bottom:14px">
+    <div class="jv-head">
+      <span style="color:${color}">${icon(ok ? "checkCircle" : "alert", 16)}</span>
+      <span style="font-weight:650; color:${color}">Jury verdict: ${esc(j.verdict)}</span>
+      <div class="grow"></div>
+      <span class="small faint">${spoke} of ${jurors.length} judges reviewed</span>
+      ${j.synthesis === "deterministic"
+        ? `<span class="badge" title="The foreperson model could not be reached — findings were merged mechanically and only critical/high were allowed to block">mechanical synthesis</span>` : ""}
+    </div>
+
+    ${j.rationale ? `<div class="jv-rationale"><b>Foreperson.</b> ${esc(j.rationale)}
+      ${j.foreperson ? `<span class="small faint mono"> — ${esc(j.foreperson)}</span>` : ""}</div>` : ""}
+
+    ${sec("Blocking", j.blocking, "jv-block", "must be fixed before merge")}
+    ${sec("Observations", j.observations, "jv-obs", "noted, not blocking")}
+    ${sec("Dismissed", j.dismissed, "jv-dropped", "raised by a judge, rejected by the foreperson")}
+
+    ${jurors.length ? `<div class="jv-sec-head">Each judge's own review
+        <span class="small faint jv-sec-hint">what every perspective actually reported</span></div>
+      ${jurors.map(jurorCardHtml).join("")}` : ""}
+  </div>`;
+}
+
 async function renderDrawerReview(d, tabBody) {
   const t = d.task;
   const scopeN = d.scope && d.scope.sibling_count > 1 ? d.scope.sibling_count : 0;
@@ -379,6 +538,8 @@ async function renderDrawerReview(d, tabBody) {
     </div>
     ${actionRow}
     <div style="margin-bottom:16px">${checks}</div>
+    ${planHtml(r.plan)}
+    ${juryVerdictHtml(r.jury)}
     ${observations}
     ${qaNotes ? `<div style="margin-bottom:14px"><div class="stat-label" style="margin-bottom:6px">QA notes</div>${qaNotes}</div>` : ""}
     <div class="stat-label" style="margin-bottom:6px">Diff</div>
@@ -890,7 +1051,7 @@ async function refreshRepoCards() {
       bodyRow = `<div style="margin-top:9px"><div class="progress"><div style="width:${r.kb_progress || 0}%"></div></div>
         <div class="small faint truncate" style="margin-top:4px">${esc(r.kb_step || "")}</div></div>`;
     } else if (r.kb_status === "ready") {
-      bodyRow = `<div class="small faint" style="margin-top:6px">${r.kb_doc_count} docs · ${r.kb_knowledge_count || 0} knowledge views${r.last_indexed_at ? ` · indexed ${fmtWhen(r.last_indexed_at)}` : ""}</div>`;
+      bodyRow = `<div class="small faint" style="margin-top:6px">${r.kb_doc_count} files · ${r.kb_knowledge_count || 0} graph nodes${r.last_indexed_at ? ` · indexed ${fmtWhen(r.last_indexed_at)}` : ""}</div>`;
     } else if (r.kb_status === "failed") {
       bodyRow = `<div class="small truncate" style="margin-top:6px; color:var(--danger)">${esc(r.kb_error || "Indexing failed")}</div>`;
     }
@@ -942,7 +1103,7 @@ async function renderKnowledgeViews() {
   const host = $("#kn-views");
   if (!STATE.repo) {
     host.innerHTML = `<div class="empty">${icon("book", 24)}<div class="e-title">No repository selected</div>
-      <div class="e-sub">Ingest a repository and its structured knowledge — architecture, modules, features, workflows — appears here.</div></div>`;
+      <div class="e-sub">Ingest a repository and its code graph — structure, entry points, routes, functional clusters — plus what past runs delivered, appears here.</div></div>`;
     return;
   }
   setText("kn-title", `Structured knowledge · ${STATE.repo.org}/${STATE.repo.name}`);
@@ -951,10 +1112,10 @@ async function renderKnowledgeViews() {
   catch (e) { host.innerHTML = `<div class="small" style="color:var(--danger)">Could not load knowledge: ${esc(e.message)}</div>`; return; }
 
   const total = data.total || 0;
-  setText("kn-count", total ? `${total} views` : "");
+  setText("kn-count", total ? `${total} items` : "");
   if (!total) {
-    host.innerHTML = `<div class="empty">${icon("layers", 24)}<div class="e-title">No structured views yet</div>
-      <div class="e-sub">Reindex this repository with structured knowledge enabled (Settings → Knowledge base) to build them.</div></div>`;
+    host.innerHTML = `<div class="empty">${icon("layers", 24)}<div class="e-title">No knowledge yet</div>
+      <div class="e-sub">Reindex this repository (Settings → Knowledge base) to build its code graph.</div></div>`;
     return;
   }
   const parts = [];
@@ -1451,6 +1612,14 @@ function showSettingsTab(id) {
     host.appendChild(buildPresetRow(view));
     if (IS_ADMIN) host.appendChild(buildModelRefreshRow(view));
   }
+  // The panel roster is its own resource (/api/jury), not a settings field —
+  // it renders above the panel-wide knobs and loads itself.
+  if (id === "jury") {
+    const slot = node(`<div id="jury-roster"><div class="row faint small" style="margin:8px 2px">
+      <div class="spinner"></div> Loading the panel…</div></div>`);
+    host.appendChild(slot);
+    loadJuryRoster(slot);
+  }
 
   const byName = Object.fromEntries(group.fields.map((f) => [f.name, f]));
   const consumed = new Set();
@@ -1477,38 +1646,269 @@ function showSettingsTab(id) {
         card.appendChild(buildSettingRow(f));
       }
     }
-    // Embeddings get a live "does my engine actually work?" probe (runs against
-    // SAVED settings — save first, then test).
-    if (id === "knowledge" && sec.name === "Embeddings") card.appendChild(buildEmbeddingsTestRow());
+    // Both knowledge engines get a live "does it actually run here?" probe
+    // (checks the SAVED settings — save first, then test).
+    if (id === "knowledge" && sec.name === "Code graph") card.appendChild(buildGraphTestRow());
+    if (id === "knowledge" && sec.name === "Code search") card.appendChild(buildSearchTestRow());
     host.appendChild(card);
   }
 }
 
-function buildEmbeddingsTestRow() {
+// --- Settings → Jury: the panel roster ------------------------------------------
+// Judges are rows in their own table, not settings fields, so this editor talks
+// to /api/jury directly and saves each edit on change (no batched Save button —
+// a half-applied panel is worse than an immediately-applied one).
+
+async function loadJuryRoster(slot) {
+  try { SETTINGS_STATE.jury = await API.jury(); }
+  catch (e) {
+    slot.innerHTML = `<div class="small" style="color:var(--danger)">${esc(e.message)}</div>`;
+    return;
+  }
+  renderJuryRoster(slot);
+}
+
+async function juryAction(slot, fn) {
+  slot.style.opacity = "0.55";
+  try {
+    SETTINGS_STATE.jury = await fn();
+    renderJuryRoster(slot);
+  } catch (e) { toast(e.message, true); }
+  slot.style.opacity = "";
+}
+
+function judgeModelControl(judge, prov) {
+  const models = (prov && prov.models) || [];
+  const slot = SETTINGS_STATE.jurySlot;
+  const text = () => {
+    const inp = node(`<input class="input mono" type="text" value="${esc(judge.model || "")}"
+      placeholder="${esc(judge.effective_model || "model id")}" ${IS_ADMIN ? "" : "disabled"}/>`);
+    inp.addEventListener("change", (e) =>
+      juryAction(slot, () => API.updateJudge(judge.id, { model: e.target.value.trim() })));
+    return inp;
+  };
+  if (!models.length) return text();
+  const opts = [...models];
+  if (judge.model && !opts.includes(judge.model)) opts.unshift(judge.model);
+  const sel = node(`<select class="select mono" ${IS_ADMIN ? "" : "disabled"}>
+    <option value="" ${judge.model ? "" : "selected"}>default (${esc(judge.effective_model || "—")})</option>
+    ${opts.map((m) => `<option value="${esc(m)}" ${m === judge.model ? "selected" : ""}>${esc(m)}</option>`).join("")}
+    <option value="__custom__">Custom model…</option></select>`);
+  sel.addEventListener("change", (e) => {
+    if (e.target.value === "__custom__") { const i = text(); sel.replaceWith(i); i.focus(); return; }
+    juryAction(slot, () => API.updateJudge(judge.id, { model: e.target.value }));
+  });
+  return sel;
+}
+
+function buildJudgeCard(judge, view, provsById, index, total) {
+  const slot = SETTINGS_STATE.jurySlot;
+  const patch = (body) => juryAction(slot, () => API.updateJudge(judge.id, body));
+  const warn = !judge.runnable
+    ? `<span class="badge" title="This provider has no key set / isn't installed, so this judge will abstain">unreachable</span>`
+    : "";
+  const card = node(`<div class="card judge-card ${judge.enabled ? "" : "judge-off"}">
+    <div class="row judge-head">
+      <label class="switch" title="Seat this judge on the panel">
+        <input type="checkbox" ${judge.enabled ? "checked" : ""} ${IS_ADMIN ? "" : "disabled"}/>
+        <span class="track"></span></label>
+      <input class="input judge-name" value="${esc(judge.name)}" ${IS_ADMIN ? "" : "disabled"}/>
+      ${warn}
+      <button class="icon-btn" data-move="-1" title="Move up" ${index === 0 || !IS_ADMIN ? "disabled" : ""}></button>
+      <button class="icon-btn" data-move="1" title="Move down" ${index === total - 1 || !IS_ADMIN ? "disabled" : ""}></button>
+      <button class="icon-btn" data-drop title="Remove this judge" ${IS_ADMIN ? "" : "disabled"}></button>
+    </div>
+    <div class="judge-grid">
+      <div class="field"><label>Perspective</label>
+        <select class="select" data-persona ${IS_ADMIN ? "" : "disabled"}>${
+          view.personas.map((p) => `<option value="${esc(p.id)}" ${p.id === judge.persona ? "selected" : ""}>${esc(p.name)}</option>`).join("")
+        }</select></div>
+      <div class="field"><label>Provider</label>
+        <select class="select" data-provider ${IS_ADMIN ? "" : "disabled"}>${
+          view.provider_options.map((o) => o === ""
+            ? `<option value="" ${judge.inherits ? "selected" : ""}>inherit Review stage (${esc(judge.effective_provider)})</option>`
+            : providerOption(o, judge.inherits ? null : judge.provider, provsById)).join("")
+        }</select></div>
+      <div class="field judge-model"><label>Model</label></div>
+    </div>
+    <div class="small faint judge-summary">${esc(judge.persona_summary)}</div>
+  </div>`);
+
+  card.querySelector(".judge-head .switch input")
+    .addEventListener("change", (e) => patch({ enabled: e.target.checked }));
+  card.querySelector(".judge-name")
+    .addEventListener("change", (e) => patch({ name: e.target.value.trim() || judge.name }));
+  card.querySelector("[data-persona]")
+    .addEventListener("change", (e) => patch({ persona: e.target.value }));
+  card.querySelector("[data-provider]").addEventListener("change", (e) =>
+    // Switching provider clears the model: the old id almost never exists on the
+    // new provider, and an invalid model is an abstention at review time.
+    patch({ provider: e.target.value, model: "" }));
+  card.querySelector(".judge-model").appendChild(
+    judgeModelControl(judge, provsById[judge.inherits ? judge.effective_provider : judge.provider]));
+
+  card.querySelectorAll("[data-move]").forEach((b) => {
+    b.innerHTML = icon(b.dataset.move === "-1" ? "chevronUp" : "chevronDown", 14);
+    b.addEventListener("click", () =>
+      juryAction(slot, () => API.moveJudge(judge.id, +b.dataset.move)));
+  });
+  const drop = card.querySelector("[data-drop]");
+  drop.innerHTML = icon("trash", 14);
+  drop.addEventListener("click", async () => {
+    if (!(await confirmDialog({
+      title: `Remove ${judge.name}?`,
+      text: "This perspective will no longer be reviewed on any future delivery.",
+      confirmLabel: "Remove", danger: true,
+    }))) return;
+    juryAction(SETTINGS_STATE.jurySlot, () => API.deleteJudge(judge.id));
+  });
+
+  // A custom judge carries its own brief; a built-in one can be given extra
+  // house rules appended to the shipped persona.
+  const isCustom = judge.persona === "custom";
+  const det = node(`<details class="prov-adv" ${isCustom ? "open" : ""}>
+    <summary class="small faint">${isCustom ? "Brief — what this judge looks for" : "Extra instructions for this judge"}</summary>
+    <textarea class="input mono" rows="4" data-focus ${IS_ADMIN ? "" : "disabled"}
+      placeholder="${isCustom
+        ? "e.g. Check every change against our API versioning policy: no field may be removed or renamed in a minor release."
+        : "Optional — appended to the built-in brief for this perspective."}">${esc(judge.focus || "")}</textarea>
+  </details>`);
+  det.querySelector("[data-focus]")
+    .addEventListener("change", (e) => patch({ focus: e.target.value }));
+  card.appendChild(det);
+  return card;
+}
+
+function renderJuryRoster(slot) {
+  SETTINGS_STATE.jurySlot = slot;
+  const view = SETTINGS_STATE.jury;
+  const provsById = Object.fromEntries((SETTINGS_STATE.view.providers || []).map((p) => [p.id, p]));
+  slot.innerHTML = "";
+  slot.appendChild(node(`<div class="settings-section-head">The panel</div>`));
+
+  const n = view.enabled_count;
+  const distinct = new Set(view.judges.filter((j) => j.enabled).map((j) => j.effective_provider)).size;
+  const bar = node(`<div class="card preset-card jury-bar">
+    <span class="preset-label">${n} judge${n === 1 ? "" : "s"} seated · ${distinct} distinct model${distinct === 1 ? "" : "s"}</span>
+    <span class="grow"></span>
+    <button class="btn btn-sm" id="jury-spread" ${IS_ADMIN ? "" : "disabled"}>Spread across providers</button>
+    <button class="btn btn-sm" id="jury-reset" ${IS_ADMIN ? "" : "disabled"}>Reset to defaults</button>
+    <button class="btn btn-primary btn-sm" id="jury-add" ${IS_ADMIN ? "" : "disabled"}>Add judge</button>
+  </div>`);
+  slot.appendChild(bar);
+  slot.appendChild(node(`<p class="small faint" style="margin:0 2px 10px; line-height:1.5">
+    Every seated judge is one LLM call per review round, so the panel multiplies the review
+    stage's cost by its size${distinct < n
+      ? ` — and ${distinct === 1 ? "they all share one model, which is an ensemble in name only" : "some share a model"}.`
+      : "."} Each judge is billed to its own run on the Costs page.</p>`));
+
+  if (!view.judges.length) {
+    slot.appendChild(node(`<div class="card small faint">No judges seated — deliveries will be
+      recorded as UNREVIEWED. Add one, or reset to the defaults.</div>`));
+  }
+  view.judges.forEach((j, i) =>
+    slot.appendChild(buildJudgeCard(j, view, provsById, i, view.judges.length)));
+
+  bar.querySelector("#jury-spread").addEventListener("click", () =>
+    juryAction(slot, async () => {
+      const v = await API.spreadJudges();
+      toast(v.changed ? `Re-modelled ${v.changed} judge(s)`
+                      : "No configured providers to spread across — add API keys under Connections",
+            !v.changed);
+      return v;
+    }));
+  bar.querySelector("#jury-reset").addEventListener("click", async () => {
+    if (!(await confirmDialog({
+      title: "Reset the panel?", danger: true, confirmLabel: "Reset",
+      text: "Your current judges, models and briefs are discarded and the default panel is re-seated.",
+    }))) return;
+    juryAction(slot, () => API.resetJury());
+  });
+  bar.querySelector("#jury-add").addEventListener("click", () => addJudgeDialog(slot));
+}
+
+async function addJudgeDialog(slot) {
+  const view = SETTINGS_STATE.jury;
+  const seated = new Set(view.judges.map((j) => j.persona));
+  const opts = view.personas
+    .map((p) => `<option value="${esc(p.id)}">${esc(p.name)}${
+      seated.has(p.id) && p.id !== "custom" ? " (already seated)" : ""}</option>`).join("");
+  const body = node(`<div>
+    <div class="field" style="margin-bottom:10px"><label>Perspective</label>
+      <select class="select" id="nj-persona">${opts}</select></div>
+    <div class="field" style="margin-bottom:10px"><label>Name</label>
+      <input class="input" id="nj-name" placeholder="shown on the run row and in the verdict"/></div>
+    <div class="field" id="nj-focus-wrap" hidden><label>Brief — what should this judge look for?</label>
+      <textarea class="input mono" rows="5" id="nj-focus"
+        placeholder="Be specific about what is and isn't this judge's job — overlapping judges produce correlated reviews."></textarea></div>
+  </div>`);
+  const personaSel = body.querySelector("#nj-persona");
+  const nameInput = body.querySelector("#nj-name");
+  const sync = () => {
+    const p = view.personas.find((x) => x.id === personaSel.value);
+    body.querySelector("#nj-focus-wrap").hidden = personaSel.value !== "custom";
+    nameInput.value = p && p.id !== "custom" ? p.name : "";
+  };
+  personaSel.addEventListener("change", sync);
+  sync();
+
+  if (!(await confirmDialog({ title: "Add a judge", bodyNode: body, confirmLabel: "Add" }))) return;
+  juryAction(slot, () => API.addJudge({
+    persona: personaSel.value,
+    name: nameInput.value.trim() || "Judge",
+    focus: body.querySelector("#nj-focus").value.trim(),
+  }));
+}
+
+// A "does this engine actually run here?" row. Both knowledge engines have one:
+// which engine is answering changes what the agents can find, and that is worth
+// showing rather than leaving an operator to infer it from bad results.
+function buildProbeRow({ id, label, help, probe, okText, failText }) {
   const row = node(`
     <div class="setting-row">
       <div class="s-info">
-        <div class="s-label">Test embeddings</div>
-        <div class="s-help">Runs one tiny embed with the saved settings above (save first).
-        Confirms the local model loads, or that your API endpoint + key respond.</div>
+        <div class="s-label">${esc(label)}</div>
+        <div class="s-help">${esc(help)}</div>
       </div>
       <div class="s-control">
-        <span class="small faint mono" id="emb-test-out" style="margin-right:8px"></span>
-        <button class="btn btn-sm" id="emb-test">Test</button>
+        <span class="small faint mono" id="${id}-out" style="margin-right:8px"></span>
+        <button class="btn btn-sm" id="${id}">Test</button>
       </div>
     </div>`);
-  row.querySelector("#emb-test").addEventListener("click", async (e) => {
-    const out = row.querySelector("#emb-test-out");
+  row.querySelector(`#${id}`).addEventListener("click", async (e) => {
+    const out = row.querySelector(`#${id}-out`);
     e.currentTarget.disabled = true;
     out.textContent = "testing…";
     try {
-      const r = await API.testEmbeddings();
-      out.textContent = (r.ok ? "✓ " : "✗ ") + r.detail;
-      toast(r.ok ? "Embeddings OK" : "Embeddings test failed", !r.ok);
+      const r = await probe();
+      out.textContent = (r.ok ? "✓ " : "✗ ") + (r.output || "").split("\n").join(" · ");
+      toast(r.ok ? okText : failText, !r.ok);
     } catch (err) { out.textContent = "✗ " + err.message; toast(err.message, true); }
     e.currentTarget.disabled = false;
   });
   return row;
+}
+
+function buildGraphTestRow() {
+  return buildProbeRow({
+    id: "graph-test", label: "Test code graph",
+    help: "Locates the code-graph binary and reads its version (save first). Confirms the "
+        + "engine can run on this host; if it can't, the KB degrades to the built-in "
+        + "symbol map + ripgrep.",
+    probe: () => API.testGraph(),
+    okText: "Code graph OK", failText: "Code graph unavailable",
+  });
+}
+
+function buildSearchTestRow() {
+  return buildProbeRow({
+    id: "search-test", label: "Test code search",
+    help: "Reports which lexical engine is answering (save first): ripgrep, or the git grep "
+        + "fallback. The fallback works, but sees only tracked files and can't filter by "
+        + "language — so localization is measurably coarser.",
+    probe: () => API.testSearch(),
+    okText: "Code search OK", failText: "Code search unavailable",
+  });
 }
 
 async function renderAccessTab(host) {

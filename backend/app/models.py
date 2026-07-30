@@ -42,6 +42,7 @@ BOARD_ORDER: list[str] = [s.value for s in TaskStatus]
 
 class AgentType(str, enum.Enum):
     pm = "pm"          # Product Manager — scopes requirements, creates tasks
+    plan = "plan"      # Planner — decides HOW: verified localization + step order
     dev = "dev"        # writes the code
     qa = "qa"          # runs unit tests
     review = "review"  # reviews code against the requirements
@@ -136,6 +137,11 @@ class ScopeSession(SQLModel, table=True):
     acceptance_criteria: list = Field(default_factory=list, sa_column=Column(JSON))
     affected_files: list = Field(default_factory=list, sa_column=Column(JSON))
 
+    # The Planner's verified implementation plan for this scope (services/planner.py):
+    # ordered steps with real file:line pins, blast radius and the tests to extend.
+    # Written at pipeline entry and read by Dev, QA and the jury.
+    plan: dict = Field(default_factory=dict, sa_column=Column(JSON))
+
     # PM scoping cost (clarify + draft-tickets) accumulated here, since those
     # calls happen before any Task/AgentRun exists to attribute them to.
     pm_tokens_input: int = 0
@@ -181,6 +187,10 @@ class Task(SQLModel, table=True):
     branch: str | None = None
     qa_summary: str | None = Field(default=None, sa_column=Column(Text))
     review_summary: str | None = Field(default=None, sa_column=Column(Text))
+    # The jury's structured verdict (see services/jury): per-juror opinions plus
+    # the foreperson's synthesis. review_summary stays the rendered prose so the
+    # board, PR body and knowledge write-back keep working unchanged.
+    review_findings: dict = Field(default_factory=dict, sa_column=Column(JSON))
     token_cost: int = 0                         # rolled up from agent runs
 
     # Jira story created when the ticket is approved (if Jira is configured).
@@ -249,6 +259,26 @@ class AuthSession(SQLModel, table=True):
     user_id: int = Field(foreign_key="user.id", index=True)
     created_at: datetime = Field(default_factory=utcnow)
     expires_at: datetime
+
+
+class Judge(SQLModel, table=True):
+    """One seat on the review panel.
+
+    ``persona`` names a brief from ``services/jury/personas.py`` (or "custom",
+    in which case ``focus`` carries the operator's own brief). ``provider`` /
+    ``model`` are per-judge overrides — empty means "inherit the Review stage",
+    which is what a fresh install falls back to before any keys are set.
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    name: str
+    persona: str = "custom"
+    enabled: bool = True
+    position: int = 0                 # panel order, ascending
+    provider: str = ""                # "" = inherit review_provider
+    model: str = ""                   # "" = inherit review_model
+    focus: str | None = Field(default=None, sa_column=Column(Text))
+    created_at: datetime = Field(default_factory=utcnow)
 
 
 class AppSetting(SQLModel, table=True):

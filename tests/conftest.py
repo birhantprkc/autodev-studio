@@ -16,9 +16,9 @@ import pytest
 # Isolate global state BEFORE app.config imports and builds its settings
 # singleton: a temp DB, a fixed Fernet passphrase, and safe defaults. These have
 # to be set at import time because config.Settings() reads the environment once.
-_TMP = tempfile.mkdtemp(prefix="autodev-tests-")
+_TMP = tempfile.mkdtemp(prefix="codejury-tests-")
 os.environ["DATABASE_URL"] = f"sqlite:///{Path(_TMP, 'test.db').as_posix()}"
-os.environ["AUTODEV_SECRET_KEY"] = "test-suite-fixed-key"
+os.environ["CODEJURY_SECRET_KEY"] = "test-suite-fixed-key"
 os.environ["REPOS_DIR"] = str(Path(_TMP, "workspace"))
 os.environ["SEED_ON_STARTUP"] = "false"
 os.environ["GENERATE_KNOWLEDGE"] = "false"

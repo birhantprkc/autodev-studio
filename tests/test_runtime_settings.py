@@ -75,9 +75,8 @@ def test_view_exposes_show_if_gates():
     hide them when the driver field says they don't apply."""
     v = rs.view()
     fields = {f["name"]: f for g in v["groups"] for f in g["fields"]}
-    assert fields["embedding_api_base_url"]["show_if"] == "rag_embeddings=api"
-    assert fields["embedding_api_key"]["show_if"] == "rag_embeddings=api"
-    assert fields["embedding_model"]["show_if"] == "rag_embeddings=semantic|api"
+    assert fields["graph_binary"]["show_if"] == "graph_enabled=true"
+    assert fields["graph_index_mode"]["show_if"] == "graph_enabled=true"
     assert fields["open_real_pr"]["show_if"] == "demo_mode=false"
     assert fields["github_bot_token"]["show_if"] == "demo_mode=false"
     # Ungated fields explicitly carry no condition.

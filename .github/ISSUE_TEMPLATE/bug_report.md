@@ -25,7 +25,7 @@ A clear description of the bug.
 - OS:
 - Python version:
 - Install method: `run.sh` / Docker / `pip install -e .`
-- `RAG_EMBEDDINGS`: `semantic` / `tfidf`
+- Code graph: `codebase-memory-mcp --version` output (or "not installed" → symbol-map fallback)
 - Dev/QA/Review provider(s):
 
 ## Logs

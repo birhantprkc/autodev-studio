@@ -17,20 +17,33 @@ from sqlmodel import Session, select
 
 from ..config import settings
 from ..database import engine
-from ..models import Repo, ScopeSession, Task, TaskStatus, utcnow
+from ..models import (
+    ChatMessage,
+    MessageRole,
+    Repo,
+    ScopeSession,
+    Task,
+    TaskStatus,
+    utcnow,
+)
 from . import (
     agent_backends,
     agent_runner,
     deepwiki,
+    events,
     git_ops,
+    jury,
     lang,
     llm,
     openai_agent,
+    planner,
     precision,
     prompts,
     providers,
+    search,
 )
-from .knowledge import freshness, symbol_map, write_back
+from .knowledge import freshness, graph, symbol_map, write_back
+from .knowledge import tools as kb_tools
 
 logger = logging.getLogger(__name__)
 
@@ -79,9 +92,12 @@ def _kb_context(repo_url: str, info: dict, on_event=None) -> str:
     if not repo_url:
         return ""
     query = f"{info.get('title', '')}: {info.get('description', '')}"
-    # Precision retrieval first — right knowledge, not more.
+    # Precision retrieval first — right knowledge, not more. The plan's verified
+    # symbols steer the reranker: a location the Planner already confirmed is the
+    # target, not another candidate to weigh.
     try:
-        ctx = precision.retrieve(query, use_case="task-breakdown", repo_url=repo_url)
+        ctx = precision.retrieve(query, use_case="task-breakdown", repo_url=repo_url,
+                                 plan_symbols=info.get("target_symbols"))
         if ctx:
             if on_event:
                 on_event("info", f"Precision KB: task-scoped slice ({len(ctx)} chars)")
@@ -130,8 +146,10 @@ def _auto_http_target() -> tuple[str, str]:
 _SYM_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,}")
 
 # Injected file-content budget for the Dev prompt: combined char cap across all
-# pinned files, per-file cap, and the overall verified-locations block cap
-# (raised from 4800 to fit real content, not just outlines/snippets).
+# pinned files, per-file cap, and the overall verified-locations block cap.
+# The budget is spent on what the PLAN names, not on everything anyone guessed —
+# injection is what beat a cold `claude -p` on the rich benchmark, but the old
+# version spent it on the PM's unverified hypothesis.
 _FILE_CONTENT_BUDGET = 9000
 _FILE_CONTENT_MAX_PER_FILE = 4000
 _VERIFIED_BLOCK_MAX = 16000
@@ -144,12 +162,18 @@ def _verified_locations(path: str, files: list[str] | None, symbols: list[str] |
     most of the run's input tokens) on find/ls/whole-file reads rediscovering
     exactly this.
 
-    Two free sources, cross-checked: the precomputed line-numbered symbol map
-    (kept current by knowledge/freshness.py at run entry) names the DEFINITION
-    site and powers the outlines; live `git grep` verifies against this exact
-    working copy and adds usage pins. Symbols found nowhere get 'did you mean'
-    suggestions from the map instead of sending Dev hunting."""
-    smap = symbol_map.load_slug(Path(path).name)
+    Three free sources, cross-checked: the code graph (AST-verified, kept
+    current by knowledge/freshness.py at run entry) names the DEFINITION site,
+    powers the outlines and adds CALLER pins (the blast radius a flat map
+    can't see); the symbol map is the no-binary fallback; live ripgrep
+    verifies against this exact working copy and adds usage pins. Symbols
+    found nowhere get 'did you mean' suggestions instead of sending Dev
+    hunting."""
+    # The graph is keyed by repo slug == workdir basename (git_ops.slug is
+    # idempotent on slugs, so the wrapper resolves it to the same project).
+    slug = Path(path).name
+    use_graph = graph.available()
+    smap = symbol_map.load_slug(slug)
     lines: list[str] = []
     unknown: list[str] = []
     seen: set[str] = set()
@@ -170,21 +194,37 @@ def _verified_locations(path: str, files: list[str] | None, symbols: list[str] |
             continue
         seen.add(ident)
         entry: list[str] = []
-        # Definition site(s) from the symbol map — the highest-value pin.
-        map_hits = smap.lookup(ident) if smap else []
-        if map_hits:
+        # Definition site(s) — graph first (AST-verified, cross-language),
+        # symbol map as the no-binary fallback. The highest-value pin.
+        graph_hits = graph.lookup(slug, ident, limit=2) if use_graph else []
+        map_hits = [] if graph_hits else (smap.lookup(ident) if smap else [])
+        if graph_hits:
+            defs = "; ".join(
+                f"{g['file_path']}:{g['start_line'] or '?'} ({g['label'].lower()})"
+                for g in graph_hits)
+            entry.append(f"    defined at {defs}")
+            if not pinned_file:
+                pinned_file = graph_hits[0]["file_path"]
+            # Callers from the graph: where behavior changes propagate — the
+            # pins that keep Dev from breaking call sites it never opened.
+            calls = graph.callers(slug, ident, limit=3)
+            if calls:
+                entry.append("    called from " + "; ".join(
+                    f"{c['file_path']}:{c['start_line'] or '?'} ({c['name']})"
+                    for c in calls))
+        elif map_hits:
             defs = "; ".join(
                 f"{f}:{m['l']} ({m['k']}" + (f" of {m['p']}" if m.get("p") else "") + ")"
                 for f, m in map_hits[:2])
             entry.append(f"    defined at {defs}")
             if not pinned_file:  # grep the definition file for precise usage rows
                 pinned_file = map_hits[0][0]
-        # Grep the symbol's own pinned file first (precise), repo-wide only as
+        # Search the symbol's own pinned file first (precise), repo-wide only as
         # fallback — and drop docs/config hits, which just distract the agent.
         pat = rf"\b{re.escape(ident)}\b"
-        hits = git_ops.grep_lines(path, pat, max_lines=3, pathspec=pinned_file) if pinned_file else ""
+        hits = search.lines(path, pat, max_lines=3, pathspec=pinned_file) if pinned_file else ""
         if not hits or hits == "(no matches)":
-            hits = git_ops.grep_lines(path, pat, max_lines=10)
+            hits = search.lines(path, pat, max_lines=10)
         rows = [h for h in hits.splitlines()
                 if ":" in h and not h.split(":", 1)[0].endswith(noise)][:3]
         entry.extend(f"    {h[:140]}" for h in rows)
@@ -192,23 +232,29 @@ def _verified_locations(path: str, files: list[str] | None, symbols: list[str] |
             lines.append(f"  {ident}:\n" + "\n".join(entry))
             # Localize the EXISTING tests exercising this symbol too — Dev should
             # extend the real suite (and run it), not write a parallel one.
-            for tf in git_ops.grep_files(path, pat, pathspec="*test*", max_files=3):
+            for tf in search.files(path, pat, pathspec="*test*", max_files=3):
                 if not tf.endswith(noise):
                     test_files.setdefault(tf)
-        elif smap:  # nowhere in map or grep — likely a PM invention
+        elif smap or use_graph:  # nowhere in graph/map or grep — likely a PM invention
             unknown.append(ident)
     # Full contents of the pinned files, budgeted — this is what actually saves
     # Dev a Read tool call. Live runs showed Dev re-reading whole files it was
     # already pointed at (~70% of its input tokens on rediscovery); an outline
     # alone still leaves Dev needing the real text before it can edit.
-    content_budget = _FILE_CONTENT_BUDGET
+    content_budget = _FILE_CONTENT_BUDGET if settings.dev_inject_file_contents else 0
     contents: list[str] = []
     for f in (files or [])[:8]:
         text = git_ops.read_file(path, f, max_chars=_FILE_CONTENT_MAX_PER_FILE + 1)
         if text is None:
             lines.append(f"  file {f}: DOES NOT EXIST (create it if needed)")
             continue
-        outline = smap.outline(f, max_symbols=25) if smap else ""
+        outline = ""
+        if use_graph:
+            outline = ", ".join(
+                f"{o['name']}:{o['start_line'] or '?'}"
+                for o in graph.outline(slug, f, limit=25) if o.get("name"))
+        if not outline and smap:
+            outline = smap.outline(f, max_symbols=25)
         lines.append(f"  file {f}: exists" + (f" — contains: {outline}" if outline else ""))
         if content_budget > 500 and len(contents) < 3:
             snippet = text[:min(_FILE_CONTENT_MAX_PER_FILE, content_budget)]
@@ -217,7 +263,7 @@ def _verified_locations(path: str, files: list[str] | None, symbols: list[str] |
             content_budget -= len(snippet)
     out = ""
     if lines:
-        out += ("Verified code locations (symbol map + `git grep` against this working copy "
+        out += ("Verified code locations (code graph + ripgrep against this working copy "
                 "just now — these pins are real, go straight to them):\n" + "\n".join(lines))
     if test_files:
         out += ("\n  existing tests exercising these symbols (extend/update THESE and run "
@@ -269,6 +315,60 @@ def _backend_unavailable(backend: str, err: str) -> bool:
                                   "no scriptable", "headless"))
 
 
+def _install_dev_tools(path: str, on_event) -> str:
+    """Give a CLI-backed Dev agent real, callable retrieval tools: drop the
+    `.codejury/kb` shim into the working copy (git-ignored) so it can query the
+    code graph + semantic index through the shell instead of grepping around.
+
+    Backend-agnostic on purpose — every headless coding CLI has a shell, so the
+    tools don't depend on one vendor's MCP support. Returns the command to
+    advertise, or "" (fail open: the agent works as before)."""
+    cmd = kb_tools.install(path, Path(path).name)
+    if cmd:
+        on_event("info", f"Dev index tools installed: {cmd} "
+                         f"({', '.join(kb_tools.TOOL_NAMES)})")
+    return cmd
+
+
+def _refresh_and_plan(session_id: int, rep: int, repo_url: str, path: str, scope: dict,
+                      subs: list[dict]) -> dict:
+    """Prepare the run, then decide HOW this scope gets built.
+
+    Both halves happen here, before the Dev run row opens, and both for the same
+    reason: the tree has just been reset to origin's default branch, so this is
+    the one moment when the working copy is clean, the code graph can be synced
+    to exactly what Dev will edit, and nothing has been changed yet. Keeping them
+    out of the Dev run row also keeps Dev's duration and cost measuring Dev
+    rather than the preparation done on its behalf.
+
+    Returns the verified plan ({} when planning is off or could not run — the
+    pipeline then works from the scope alone, which is exactly the no-planner
+    ablation).
+    """
+    if not settings.planner_enabled:
+        freshness.refresh_if_stale(repo_url)
+        return {}
+    rid, t0 = agent_runner.start_run(rep, "plan")
+    agent_runner.set_model(rid, providers.label(
+        settings.planner_provider, settings.planner_model))
+    freshness.refresh_if_stale(repo_url, on_event=agent_runner.logger_for(rid))
+    agent_runner.log(rid, "info", "Planner: reading the repository to decide the approach")
+    res = planner.plan(repo_url, path, scope, subs, on_event=agent_runner.logger_for(rid))
+    plan_obj = res.get("plan") or {}
+    if plan_obj:
+        agent_runner.log(rid, "info", planner.as_prompt(plan_obj))
+    agent_runner.finish_run(rid, rep, t0, tokens_in=res.get("tokens_in", 0),
+                            tokens_out=res.get("tokens_out", 0), cost=res.get("cost", 0.0),
+                            error=res.get("error") if not plan_obj else None)
+    with Session(engine) as db:
+        session = db.get(ScopeSession, session_id)
+        if session is not None:
+            session.plan = plan_obj
+            db.add(session)
+            db.commit()
+    return plan_obj
+
+
 def _dev_agent(path: str, key: str, info: dict, on_event, context: str = "",
                test_cmd: str = "") -> tuple[dict, str]:
     """Run the Dev coding agent. When dev_provider maps to an agent backend
@@ -284,10 +384,12 @@ def _dev_agent(path: str, key: str, info: dict, on_event, context: str = "",
             else _agent_model(provider, backend, settings.dev_model)
         label = _agent_label(provider, model)
         on_event("info", f"Dev model: {label}")
+        tools_cmd = _install_dev_tools(path, on_event)
         prompt = prompts.dev(key, info["title"], info["description"], info["criteria"], context,
                              affected_files=info.get("affected_files"),
                              target_symbols=info.get("target_symbols"),
-                             test_cmd=test_cmd,
+                             test_cmd=test_cmd, tools_cmd=tools_cmd,
+                             plan=planner.as_prompt(info.get("plan") or {}),
                              verified=_verified_locations(path, info.get("affected_files"),
                                                           info.get("target_symbols")))
         res = agent_backends.run(backend, path, prompt, on_event, model=model)
@@ -321,15 +423,17 @@ def _inconclusive(res: dict) -> bool:
     return bool(res.get("error")) and not (res.get("text") or "").strip()
 
 
-def _review_once(path: str, key: str, criteria: list, diff: str, on_event) -> tuple[dict, str]:
+def _review_once(path: str, key: str, criteria: list, diff: str, on_event,
+                 impact: str = "") -> tuple[dict, str]:
     provider = settings.review_provider  # separate from Dev — unbiased reviewer
+    prompt = prompts.review(key, criteria, diff) + (f"\n\n{impact}" if impact else "")
     backend = providers.agent_backend(provider)
     if backend:  # any agentic CLI can review — cross-provider vs Dev by config
         model = _agent_model(provider, backend, settings.review_model)
-        res = agent_backends.run(backend, path, prompts.review(key, criteria, diff), on_event,
+        res = agent_backends.run(backend, path, prompt, on_event,
                                  model=model)
         return res, provider
-    r = llm.chat(prompts.REVIEW_SYSTEM, prompts.review(key, criteria, diff),
+    r = llm.chat(prompts.REVIEW_SYSTEM, prompt,
                  provider=provider, model=settings.review_model)
     if r.get("text"):
         on_event("info", r["text"])  # full review — the log panel shows the whole verdict
@@ -338,17 +442,110 @@ def _review_once(path: str, key: str, criteria: list, diff: str, on_event) -> tu
              "error": r.get("error")}, provider)
 
 
-def _review_agent(path: str, key: str, criteria: list, diff: str, on_event) -> tuple[dict, str]:
-    """Review with an explicit INCONCLUSIVE outcome: when the reviewer can't run
-    at all (network/provider failure, even after in-call retries), retry once,
-    then stamp a loud INCONCLUSIVE verdict instead of an empty summary. A blank
-    review_summary reads as 'no issues' downstream (board, PR body, write-back) —
-    which is how an unreviewed delivery once shipped looking clean."""
-    res, provider = _review_once(path, key, criteria, diff, on_event)
+def _original_request(session_id: int) -> str:
+    """What the human actually typed, before the PM restated it as criteria.
+
+    The jury needs this: acceptance criteria are a lossy paraphrase written
+    before anyone read the code, so a panel holding only the criteria can verify
+    the change against the paraphrase but cannot notice that the paraphrase
+    missed the point. Joined across turns because the clarifying answers are
+    often where the real requirement lives."""
+    with Session(engine) as db:
+        msgs = db.exec(
+            select(ChatMessage).where(
+                ChatMessage.session_id == session_id,
+                ChatMessage.role == MessageRole.user.value,
+            ).order_by(ChatMessage.id)
+        ).all()
+    return "\n\n---\n\n".join((m.content or "").strip() for m in msgs if (m.content or "").strip())
+
+
+def _localization_brief(files: list, symbols: list, plan_obj: dict | None = None) -> str:
+    """What the change was SUPPOSED to do and where, handed to the jury to check
+    the diff against.
+
+    With a plan, this is the strongest evidence the panel gets: the steps were
+    decided against the code graph and every symbol was verified, so a diff that
+    landed somewhere else is a real signal — either the Dev agent found something
+    the Planner missed (it is told to, and to say so), or it went wrong. Without
+    a plan the same block carries the PM's unverified hypothesis, and says so —
+    a juror weighing a guess as a fact is how a correct change gets rejected.
+    """
+    if plan_obj and plan_obj.get("steps"):
+        lines = ["The plan this change was supposed to implement (decided against the "
+                 "code graph before any code was written; every file::symbol below was "
+                 "VERIFIED to exist). Judge the diff against it: work that landed "
+                 "elsewhere is worth questioning, though the Dev agent is explicitly "
+                 "allowed to overrule a step it found to be wrong — if it did, it should "
+                 "have said so in its summary."]
+        lines.append(planner.as_prompt(plan_obj))
+        if plan_obj.get("open_questions"):
+            lines.append("The Planner could NOT confirm these, so do not treat them as "
+                         "settled: " + "; ".join(plan_obj["open_questions"]))
+        return "\n".join(lines)
+    if not files and not symbols:
+        return ""
+    lines = ["Where the change was expected to land (an UNVERIFIED hypothesis — no "
+             "planner ran on this delivery — judge whether the diff's actual location "
+             "is the RIGHT one):"]
+    if files:
+        lines.append("  files: " + ", ".join(str(f) for f in files[:10]))
+    if symbols:
+        lines.append("  symbols: " + ", ".join(str(s) for s in symbols[:12]))
+    return "\n".join(lines)
+
+
+def _jury_review(task_id: int, path: str, key: str, title: str, criteria: list, diff: str,
+                 on_event, impact: str = "", context: str = "", dev_summary: str = "",
+                 test_output: str = "", request: str = "", description: str = "",
+                 localization: str = "") -> tuple[dict, str, dict]:
+    """Review by the jury: N specialized judges in parallel, then a foreperson.
+
+    Each juror is billed to its OWN AgentRun so the Costs page shows what the
+    panel actually costs per judge (a jury silently multiplies the review stage's
+    bill; hiding that in one row would be dishonest). The run this is called
+    from carries the foreperson's usage and the final verdict.
+
+    Returns (result, label, decision)."""
+    def _bill(op) -> None:
+        rid, t0 = agent_runner.start_run(task_id, "review")
+        agent_runner.set_model(rid, f"{op.name} · {providers.label(op.provider, op.model)}")
+        agent_runner.log(rid, "warn" if op.error else "info",
+                         op.error or (op.summary or f"{op.name}: {op.verdict}"))
+        for f in op.findings:
+            agent_runner.log(rid, "info",
+                             f"[{f['severity']} · {f['confidence']:.0%}] {f['title']}"
+                             + (f" — {f['location']}" if f["location"] else ""))
+        agent_runner.finish_run(rid, task_id, t0, tokens_in=op.tokens_in,
+                                tokens_out=op.tokens_out, cost=op.cost,
+                                error=op.error or None)
+
+    res = jury.review(key, title, criteria, diff, workdir=path, context=context, impact=impact,
+                      dev_summary=dev_summary, test_output=test_output, request=request,
+                      description=description, localization=localization,
+                      on_event=on_event, on_opinion=_bill)
+    decision = res["decision"]
+    n = len(res["opinions"])
+    label = f"jury ({n} judge{'s' if n != 1 else ''}) → " + (
+        decision.get("foreperson") or providers.label(
+            settings.jury_synthesis_provider or settings.review_provider,
+            settings.jury_synthesis_model or settings.review_model))
+    return res, label, decision
+
+
+def _review_agent(path: str, key: str, criteria: list, diff: str, on_event,
+                  impact: str = "") -> tuple[dict, str]:
+    """Single-reviewer path (jury disabled), with an explicit INCONCLUSIVE
+    outcome: when the reviewer can't run at all (network/provider failure, even
+    after in-call retries), retry once, then stamp a loud INCONCLUSIVE verdict
+    instead of an empty summary. A blank review_summary reads as 'no issues'
+    downstream (board, PR body, write-back) — which is how an unreviewed
+    delivery once shipped looking clean."""
+    res, provider = _review_once(path, key, criteria, diff, on_event, impact=impact)
     if _inconclusive(res):
         on_event("warn", f"Review agent could not run ({(res.get('error') or '')[:80]}) — retrying once")
         time.sleep(20)
-        res, provider = _review_once(path, key, criteria, diff, on_event)
+        res, provider = _review_once(path, key, criteria, diff, on_event, impact=impact)
     if _inconclusive(res):
         res["text"] = (f"VERDICT: INCONCLUSIVE — the review agent could not run "
                        f"({(res.get('error') or 'unknown error')[:160]}). "
@@ -357,10 +554,70 @@ def _review_agent(path: str, key: str, criteria: list, diff: str, on_event) -> t
     return res, provider
 
 
-def _qa_agent(key: str, title: str, criteria: list, diff: str, test_out: str, on_event) -> dict:
-    """QA with the same explicit INCONCLUSIVE outcome as _review_agent."""
-    user = prompts.qa_user(key, title, criteria, diff, test_out)
+def _impact_brief(repo_url: str, path: str) -> str:
+    """Call-graph impact of this branch's committed changes (graph
+    detect_changes since origin's default branch): the symbols the change can
+    actually affect. Focuses QA/Review on the real blast radius instead of
+    re-auditing the whole repo — and away from pre-existing issues elsewhere."""
+    try:
+        imp = graph.impact(repo_url, since=f"origin/{git_ops.default_branch(path)}")
+    except Exception:  # noqa: BLE001
+        return ""
+    syms = (imp or {}).get("impacted_symbols") or []
+    if not syms:
+        return ""
+    # Name each impacted symbol's CALL SITES, not just the symbol. A reviewer
+    # reasoning about "does this edit reach the render path or only the
+    # measurement path?" is guessing without them — and a juror guessing wrong
+    # costs a full Dev+QA+Review round (observed live on rich: a blocking
+    # finding claimed a helper was measurement-only when the graph shows both
+    # _measure_column and _render calling it).
+    rows: list[str] = []
+    slug = Path(path).name
+    use_graph = graph.available()
+    for s in syms[:20]:
+        name = s.get("name")
+        row = f"  {name} ({str(s.get('label', '')).lower()}, {s.get('file')})"
+        calls = graph.callers(slug, str(name), limit=4) if (use_graph and name) else []
+        if calls:
+            row += "\n      called from: " + "; ".join(
+                f"{c['file_path']}:{c['start_line'] or '?'} ({c['name']})" for c in calls)
+        rows.append(row)
+    return ("Impact analysis (from the repo's call graph — symbols this change "
+            "affects directly or through callers; verification belongs HERE, "
+            "code outside this list is untouched by the change). The 'called "
+            "from' lines are AST-verified: trust them over your own reading of "
+            "which paths reach an edited function:\n"
+            + "\n".join(rows))
+
+
+def _qa_agent(key: str, title: str, criteria: list, diff: str, test_out: str, on_event,
+              impact: str = "", path: str = "") -> dict:
+    """QA with the same explicit INCONCLUSIVE outcome as _review_agent, and the
+    same one-shot reachback the jurors get: QA judges correctness against code it
+    can only see a diff of, so it may ask the index before deciding."""
+    user = prompts.qa_user(key, title, criteria, diff, test_out) \
+        + (f"\n\n{impact}" if impact else "")
+    if settings.jury_tool_calls > 0 and path:
+        user += "\n" + kb_tools.evidence_block()
     qa = llm.chat(prompts.QA_SYSTEM, user, provider=settings.qa_provider, model=settings.qa_model)
+    requests = kb_tools.parse_requests(qa.get("text") or "")
+    # An answer that is ONLY lookups is a question, not a verdict — answer it and
+    # ask once more. A reply that already reached a verdict stands: paying for a
+    # second opinion from the same model on the same evidence buys nothing.
+    if requests and settings.jury_tool_calls > 0 and path and "VERDICT" not in (qa.get("text") or "").upper():
+        answers = kb_tools.run_requests(Path(path).name, path, requests,
+                                        limit=settings.jury_tool_calls)
+        if answers:
+            on_event("info", "QA queried the index: "
+                             + ", ".join(f"{n} {a[:40]}" for n, a in requests[:3]))
+            follow = llm.chat(prompts.QA_SYSTEM,
+                              f"{user}\n\n{answers}\n\nNow give your verdict. Do not "
+                              "request more lookups.",
+                              provider=settings.qa_provider, model=settings.qa_model)
+            for k in ("tokens_in", "tokens_out", "cost"):
+                follow[k] = (follow.get(k) or 0) + (qa.get(k) or 0)
+            qa = follow
     if _inconclusive(qa):
         on_event("warn", f"QA agent could not run ({(qa.get('error') or '')[:80]}) — retrying once")
         time.sleep(20)
@@ -450,15 +707,17 @@ def _qa_failed(text: str) -> bool:
 def _dev_revise(path: str, key: str, title: str, criteria: list, review_text: str,
                 qa_text: str, on_event, context: str = "",
                 affected_files: list | None = None, target_symbols: list | None = None,
-                diff: str = "", test_cmd: str = "") -> tuple[dict, str]:
+                diff: str = "", test_cmd: str = "", plan_obj: dict | None = None) -> tuple[dict, str]:
     """Revision Dev pass: edit the already-committed change to address feedback.
-    Inherits the PM's localization (affected_files/target_symbols) and the current
-    branch diff, so the reviser edits the right files instead of scraping paths
-    out of review prose (which produced zero-change revisions)."""
+    Inherits the verified localization (affected_files/target_symbols), the plan,
+    and the current branch diff, so the reviser edits the right files instead of
+    scraping paths out of review prose (which produced zero-change revisions)."""
     provider = settings.dev_provider
-    prompt = prompts.revise(key, title, criteria, review_text, qa_text, context, test_cmd=test_cmd,
-                            verified=_verified_locations(path, affected_files, target_symbols))
     backend = providers.agent_backend(provider)
+    prompt = prompts.revise(key, title, criteria, review_text, qa_text, context, test_cmd=test_cmd,
+                            tools_cmd=_install_dev_tools(path, on_event) if backend else "",
+                            plan=planner.as_prompt(plan_obj or {}),
+                            verified=_verified_locations(path, affected_files, target_symbols))
     if backend:
         if backend == "claude-code":
             model = settings.dev_model if settings.dev_model in _CLI_ALIASES else settings.claude_model
@@ -499,6 +758,9 @@ def _update(task_id: int, **fields) -> None:
         task.updated_at = utcnow()
         db.add(task)
         db.commit()
+    # Lets an attached terminal client redraw the stage timeline the moment a
+    # task moves, rather than noticing on its next poll.
+    events.publish("task.updated", task_id=task_id, fields=fields)
 
 
 def _update_all(ids: list[int], **fields) -> None:
@@ -593,12 +855,30 @@ def _run_scope_locked(session_id: int) -> None:
             "target_symbols": all_symbols, "is_scope": True}
 
     _update_all(ids, status=TaskStatus.in_dev.value, branch=branch)
+
+    # --- Refresh the knowledge layers, then plan — both before Dev opens ---
+    # The plan's localization REPLACES whatever the tickets carried, rather than
+    # supplementing it: the PM works from summaries and never opens the code,
+    # while the Planner queried the graph and had every symbol it named verified
+    # against the real repo. Two sources of "which file" is how a Dev agent ends
+    # up editing three.
+    plan_obj = _refresh_and_plan(session_id, rep, repo_url, path, {
+        "summary": scope_title,
+        "acceptance_criteria": all_criteria,
+    }, subs)
+    if plan_obj:
+        plan_files, plan_symbols = planner.targets(plan_obj)
+        if plan_files or plan_symbols:
+            all_files, all_symbols = plan_files, plan_symbols
+            work["affected_files"], work["target_symbols"] = plan_files, plan_symbols
+            # Write the verified localization onto the tickets so the board shows
+            # where the work actually goes, not where anyone guessed.
+            _update_all(ids, affected_files=plan_files, target_symbols=plan_symbols)
+    work["plan"] = plan_obj
+
     rid, t0 = agent_runner.start_run(rep, "dev")
     agent_runner.log(rid, "info",
                      f"Dev agent implementing {len(subs)} subtask(s) as one work order on {branch}")
-    # The tree was just reset to origin's default branch — the one safe moment
-    # to sync the knowledge layers (symbol map free; prose views incrementally).
-    freshness.refresh_if_stale(repo_url, on_event=agent_runner.logger_for(rid))
     kb = _kb_context(repo_url, work, agent_runner.logger_for(rid))
     test_cmd = _test_cmd(path)  # builds the per-repo test env so Dev can verify
     if test_cmd:
@@ -678,8 +958,9 @@ def _run_scope_locked(session_id: int) -> None:
                                  f"{n_files} file(s)/{n_lines} line(s)) — saved the QA+Review gate cost")
                 agent_runner.finish_run(rid, rep, t0)
                 break
+        impact_text = _impact_brief(repo_url, path)
         qa = _qa_agent(f"scope-{session_id}", scope_title, all_criteria, diff, test_out,
-                       agent_runner.logger_for(rid))
+                       agent_runner.logger_for(rid), impact=impact_text, path=path)
         agent_runner.set_model(rid, _qa_label())
         if qa.get("text"):
             agent_runner.log(rid, "info", qa["text"])  # full QA verdict for the log panel
@@ -689,25 +970,63 @@ def _run_scope_locked(session_id: int) -> None:
         agent_runner.finish_run(rid, rep, t0, tokens_in=qa.get("tokens_in", 0), tokens_out=qa.get("tokens_out", 0),
                                 cost=qa.get("cost", 0.0), error=qa.get("error"))
 
-        # Review over the whole scope diff
+        # Review over the whole scope diff — the jury (several specialized judges
+        # + a foreperson) unless the operator turned the ensemble off.
         _update_all(ids, status=TaskStatus.review.value)
+        verdict = ""
         rid, t0 = agent_runner.start_run(rep, "review")
-        rev, rprov = _review_agent(path, f"scope-{session_id}", all_criteria, diff, agent_runner.logger_for(rid))
-        agent_runner.set_model(rid, _review_label(rprov))
+        if jury.enabled():
+            rev, rlabel, decision = _jury_review(
+                rep, path, f"scope-{session_id}", scope_title, all_criteria, diff,
+                agent_runner.logger_for(rid), impact=impact_text, context=kb,
+                dev_summary=res.get("text", ""), test_output=test_out,
+                request=_original_request(session_id), description=desc,
+                localization=_localization_brief(all_files, all_symbols, plan_obj))
+            verdict = decision.get("verdict", "")
+            _update_all(ids, review_findings=decision)
+        else:
+            rev, rprov = _review_agent(path, f"scope-{session_id}", all_criteria, diff,
+                                       agent_runner.logger_for(rid), impact=impact_text)
+            rlabel = _review_label(rprov)
+        agent_runner.set_model(rid, rlabel)
         rev_text = rev.get("text", "")
         if rev_text:
             _update_all(ids, review_summary=rev_text)  # errored calls keep the last good verdict
         agent_runner.finish_run(rid, rep, t0, tokens_in=rev["tokens_in"], tokens_out=rev["tokens_out"],
                                 cost=rev["cost"], error=rev["error"])
 
-        # Decide: ship, or send back to Dev for another round?
-        needs_fix = _review_changes_requested(rev_text) or _qa_failed(qa_text)
+        # Decide: ship, or send back to Dev for another round? The jury reports a
+        # machine-readable verdict; the single reviewer only ever produced prose.
+        needs_fix = (verdict == "CHANGES REQUESTED" if verdict
+                     else _review_changes_requested(rev_text)) or _qa_failed(qa_text)
         if not needs_fix:
             break
         if attempt >= max_rounds:
-            agent_runner.log(rid, "warn",
+            # Rounds exhausted with the review still blocking. This delivery is
+            # NOT approved, and it must not reach the PR lane looking like one
+            # that was: same status, same green board card, an unresolved defect
+            # inside. (Live run on rich: shipped with a jury-confirmed early
+            # `return` that skipped the table's bottom border.) Stamp it on the
+            # summary the UI and the PR body both render, and flag it on the
+            # decision so the board can badge it.
+            blocking = (decision.get("blocking") or []) if jury.enabled() else []
+            titles = "; ".join(str(b.get("title") or "")[:120] for b in blocking[:3])
+            banner = (
+                f"⚠️ DELIVERED WITHOUT APPROVAL — the review still requested changes after "
+                f"{max_rounds} revision round(s), so the pipeline stopped paying for more. "
+                f"{len(blocking) or 'Outstanding'} finding(s) remain UNRESOLVED"
+                + (f": {titles}" if titles else "")
+                + ". Do NOT merge without addressing them or deciding they are wrong.\n\n"
+            )
+            rev_text = banner + rev_text
+            _update_all(ids, review_summary=rev_text)
+            if jury.enabled():
+                decision["unresolved_blocking"] = len(blocking) or 1
+                decision["rounds_exhausted"] = max_rounds
+                _update_all(ids, review_findings=decision)
+            agent_runner.log(rid, "error",
                              f"Still CHANGES REQUESTED after {max_rounds} revision round(s) — "
-                             "opening the PR with the outstanding feedback noted")
+                             "opening the PR flagged as UNAPPROVED with the findings outstanding")
             break
 
         # --- Revision Dev pass over the whole scope: fix, re-commit, re-diff ---
@@ -721,7 +1040,7 @@ def _run_scope_locked(session_id: int) -> None:
         res, dev_label = _dev_revise(path, f"scope-{session_id}", scope_title, all_criteria,
                                      rev_text, qa_text, agent_runner.logger_for(rid), kb,
                                      affected_files=all_files, target_symbols=all_symbols,
-                                     diff=diff, test_cmd=test_cmd)
+                                     diff=diff, test_cmd=test_cmd, plan_obj=plan_obj)
         agent_runner.set_model(rid, dev_label)
         committed = git_ops.add_commit(path, f"scope-{session_id}: address review feedback (round {round_no})")
         agent_runner.log(rid, "success" if committed else "warn",
@@ -742,7 +1061,7 @@ def _run_scope_locked(session_id: int) -> None:
     _update_all(ids, status=TaskStatus.pr.value)
     rid, t0 = agent_runner.start_run(rep, "pr")
     pr_title = f"Scope: {scope_title[:60]}"
-    pr_body = prompts.scope_pr_body(scope_title, subs, qa_text)
+    pr_body = prompts.scope_pr_body(scope_title, subs, qa_text, review_summary=rev_text)
     pr_link = ""
     if not _prs_enabled():
         agent_runner.log(rid, "info",

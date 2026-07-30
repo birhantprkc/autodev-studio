@@ -23,7 +23,7 @@ pattern as the embedding layer (semantic when installed, tfidf otherwise):
     costs memory.
   * regex fallback (always available, zero native deps) — line-anchored
     extractors with a naive brace/indent tracker for methods. Good enough for
-    an index (the pipeline cross-checks every pin with live `git grep`), and it
+    an index (the pipeline cross-checks every pin with live ripgrep), and it
     keeps the core install dependency-light.
 
 Any tree-sitter failure (missing grammar, parse crash) silently degrades to the

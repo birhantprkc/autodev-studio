@@ -3,6 +3,18 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _default_database_url() -> str:
+    """SQLite file at the project root. ``codejury.db`` is the current name;
+    an install that predates the rename keeps using its existing
+    ``sdlc_agents.db`` so no history is orphaned."""
+    new = _ROOT / "codejury.db"
+    legacy = _ROOT / "sdlc_agents.db"
+    path = legacy if (legacy.exists() and not new.exists()) else new
+    return f"sqlite:///{path.as_posix()}"
+
 
 def _load_key_from_env_file(name: str, env_path: str) -> str:
     """Read NAME=value from an arbitrary .env-style file (used as a cross-cwd
@@ -20,7 +32,7 @@ def _load_key_from_env_file(name: str, env_path: str) -> str:
 class Settings(BaseSettings):
     """Runtime configuration, read from environment / .env."""
 
-    # Anchor .env to the project root (AGENTS-SDLC/.env) so it's read regardless
+    # Anchor .env to the project root (CodeJury/.env) so it's read regardless
     # of the launch directory (uvicorn may run from the repo root or backend/).
     model_config = SettingsConfigDict(
         env_file=str(Path(__file__).resolve().parents[2] / ".env"),
@@ -30,70 +42,108 @@ class Settings(BaseSettings):
     # Database — anchored to an ABSOLUTE path at the AGENT root so it never
     # depends on the server's launch cwd (a relative path silently created a
     # second, empty DB when the server was started from backend/).
-    database_url: str = (
-        f"sqlite:///{(Path(__file__).resolve().parents[2] / 'sdlc_agents.db').as_posix()}"
-    )
+    database_url: str = _default_database_url()
 
     # --- Knowledge base / RAG ---
     # Retrieval backend for the agents' repo knowledge base:
-    #   "local"    — the built-in, self-contained RAG (services/local_rag.py).
-    #                No external services required; this is the default.
+    #   "local"    — the built-in, self-contained code-graph KB; the default.
     #   "deepwiki" — an external DeepWiki Open server (optional, advanced).
     rag_backend: str = "local"
-    # Embedding strategy for the local RAG:
-    #   "semantic" — dense embeddings via fastembed (local, no API key) stored in
-    #                an embedded Qdrant vector DB. The default. Automatically
-    #                falls back to "tfidf" if fastembed/qdrant aren't installed.
-    #   "api"      — any OpenAI-compatible /embeddings endpoint (OpenAI, Gemini,
-    #                Voyage, Ollama/LM Studio locally, …): bring your own base
-    #                URL + key + model. Vectors still live in embedded Qdrant.
-    #   "tfidf"    — pure-Python TF-IDF + cosine (zero extra deps).
-    rag_embeddings: str = "semantic"
-    # Embedding model: a fastembed model id for "semantic" (bge-small is small,
-    # fast, and free) or the endpoint's model id for "api" (e.g.
-    # text-embedding-3-small, nomic-embed-text).
-    embedding_model: str = "BAAI/bge-small-en-v1.5"
-    embedding_dim: int = 384
-    # "api" embeddings endpoint (OpenAI-compatible POST {base}/embeddings).
-    # Examples: https://api.openai.com/v1 · http://localhost:11434/v1 (Ollama).
-    embedding_api_base_url: str = ""
-    embedding_api_key: str = ""
-    # Embedded Qdrant storage path (per-repo collections live here; persists
-    # across restarts, so a repo stays indexed without re-embedding).
-    qdrant_path: str = "./.qdrant"
 
-    # --- Structured knowledge (multi-view repo understanding) ---
-    # Beyond chunk-level RAG, build structured *views* of each repo (architecture,
-    # modules, features, workflows, entrypoints, domain concepts, business rules,
-    # integrations) as JSON docs embedded per-domain. Fed to the PM agent when it
-    # scopes work. Needs an LLM key + the semantic stack; degrades to chunk RAG.
-    generate_knowledge: bool = True
-    knowledge_dir: str = "./.knowledge"
-    # Cost guard: describe at most this many (largest) modules per repo.
-    knowledge_max_modules: int = 25
-    # A top-level package with more analyzable files than this is split into
-    # per-subdirectory module views (httpie/ → httpie/cli, httpie/output, …).
-    # One doc per 60-file package is too coarse for retrieval to localize
-    # anything inside it; ~15 keeps docs subsystem-sized.
-    kb_module_split_files: int = 15
+    # --- Code graph (services/knowledge/graph.py) ---
+    # The deterministic localization + structural layer: a persistent knowledge
+    # graph (definitions, call edges, imports, HTTP routes; 158 languages) built
+    # by the `codebase-memory-mcp` static binary and queried per-call via its
+    # one-shot CLI. No daemon, no API key; indexing is RAM-first and takes
+    # seconds on typical repos. When the binary is missing everything degrades
+    # to the built-in symbol-map + ripgrep tier.
+    graph_enabled: bool = True
+    # Binary name on PATH or an absolute path to it.
+    graph_binary: str = "codebase-memory-mcp"
+    # Index mode: "full" (similarity + semantic-embedding edges — needed for
+    # semantic search), "moderate", or "fast" (structural only).
+    graph_index_mode: str = "full"
+
+    # --- Lexical search (services/search.py) ---
+    # ripgrep is the lexical channel: identifier-aware matching over the working
+    # copy, type-filtered per language, .gitignore-aware. It is the refinement
+    # pass at the end of retrieval (GrepRAG: lexical search recovers what an AST
+    # index cannot model — strings, comments, config, templates) and the `grep`
+    # tool every agent can call. Without the binary the same calls fall back to
+    # `git grep` (tracked files only, no type filters) — degraded, never broken.
+    ripgrep_enabled: bool = True
+    ripgrep_path: str = "rg"
+
+    # Anchored to the project root, not the launch cwd. A relative path here
+    # silently split the store in two — uvicorn started from backend/ built its
+    # indexes under backend/.knowledge and backend/.qdrant, and the same server
+    # started from the root then found nothing and re-indexed from scratch.
+    knowledge_dir: str = str(_ROOT / ".knowledge")
+
+    # --- Local dense-embedding channel (services/knowledge/embed.py) ---
+    # Real contextual embeddings over the graph's nodes, run locally via
+    # fastembed (ONNX/CPU, no Docker, no API) and stored in an embedded Qdrant
+    # collection per repo. Fused with the graph's BM25 via RRF at query time —
+    # dense for vocabulary bridging ("login" → auth code), BM25 for exact
+    # identifiers. Replaces the graph binary's near-useless static-token
+    # semantic layer. Optional: needs the [semantic] extra
+    # (fastembed + qdrant-client); off/absent → retrieval is BM25-only.
+    local_embeddings: bool = True
+    # A fastembed model id. Default: the quantized nomic-embed-code-family model
+    # (768d, ~130MB, 8k context, code-capable). Stronger code option:
+    # jinaai/jina-embeddings-v2-base-code (768d, ~640MB).
+    embedding_model: str = "nomic-ai/nomic-embed-text-v1.5-Q"
+    # Embedded Qdrant storage path (on-disk, no server; per-repo collections).
+    qdrant_path: str = str(_ROOT / ".qdrant")   # root-anchored; see knowledge_dir
+    # --- Retrieval pipeline (services/knowledge/retriever.retrieve_context) ---
+    # Five stages, each independently switchable so the whole thing is ablatable
+    # (see benchmarks/): fuse (RRF of BM25 + dense) → expand (graph) → refine
+    # (ripgrep) → snippets → rerank. Turning all four optional stages off leaves
+    # exactly the pre-pipeline behaviour, which is what makes them measurable.
+    #
+    # Graph expansion: pull each top hit's 1-hop neighbourhood (callers, callees,
+    # class members, the tests that exercise it) into the candidate pool.
+    graph_expansion: bool = True
+    # Hops to expand. RepoGraph measured 1-hop as a large gain and naive 2-hop
+    # flattening as a LOSS (the model drowns) — 2 exists for the ablation, not
+    # for production.
+    graph_hops: int = 1
+    # Lexical refinement: ripgrep the identifiers named by the query/plan to
+    # catch occurrences the index doesn't model (strings, config, templates).
+    grep_refine: bool = True
+    # Attach the top hits' real source to retrieval results, so the agent
+    # doesn't spend a tool call reading back every pin it was given.
+    snippet_context: bool = True
+    # Per-node source cap; a node above it is summarized instead of inlined.
+    snippet_max_chars: int = 2400
+    # Total char budget for the whole snippet block.
+    snippet_budget_chars: int = 6000
+    # Summarize oversized nodes with the knowledge-stage model (cached on disk
+    # per node per commit) instead of truncating them mid-function.
+    snippet_summarize: bool = True
+    # Reranking: "deterministic" (free, always available), "llm" (one batched
+    # scoring call on rerank_provider/model), "cross-encoder" (local model, needs
+    # the [rerank] extra), or "off" (the fused order untouched — the ablation arm
+    # that makes the deterministic scorer's contribution measurable rather than
+    # assumed). See services/knowledge/rerank.py.
+    rerank_mode: str = "deterministic"
+    rerank_provider: str = ""      # empty = the knowledge stage's provider
+    rerank_model: str = ""         # empty = the knowledge stage's model
+
+    # RRF fusion constant (rank offset). 60 is the standard default; measured to
+    # make no difference here (5→60 scored identically).
+    rrf_k: int = 60
+    # Weight of the dense channel relative to BM25 in the fusion. Measured on
+    # vocabulary-mismatch queries: equal weights score WORSE than dense alone
+    # (BM25's confident-but-wrong hits crowd out dense's correct ones); ≥2
+    # recovers full dense recall while keeping BM25's exact-identifier precision.
+    rrf_dense_weight: float = 2.0
 
     # --- Knowledge freshness (services/knowledge/freshness.py) ---
-    # Auto-refresh the KB at pipeline-run entry when origin has moved. The
-    # symbol map (localization layer) is always synced for free; the LLM prose
-    # views refresh incrementally per affected module, escalating to a full
-    # rebuild only past the drift thresholds below.
+    # Auto-refresh the KB at pipeline-run entry when origin has moved: the
+    # symbol map syncs incrementally and the code graph reindexes — both
+    # deterministic and free, so the KB is always exactly current.
     kb_auto_refresh: bool = True
-    # Drift that triggers a full LLM rebuild instead of per-module refresh:
-    # fraction of analyzable files changed since the last view build, or an
-    # absolute changed-file count — whichever hits first.
-    kb_full_rebuild_fraction: float = 0.25
-    kb_full_rebuild_files: int = 100
-    # Max module views regenerated per incremental refresh (1 LLM call each).
-    kb_refresh_max_modules: int = 8
-    # Rate limit on full rebuilds (hours) so a fast-moving repo doesn't re-pay
-    # the whole ingest LLM cost on every run; deferred rebuilds are flagged and
-    # happen in the next allowed window.
-    kb_full_rebuild_min_hours: float = 24.0
 
     # --- Knowledge write-back (services/knowledge/write_back.py) ---
     # After a scope delivers, persist a delivery-note knowledge doc (files
@@ -193,10 +243,12 @@ class Settings(BaseSettings):
     # Empty = fall back to qa_model (see resolution at the bottom of this file).
     #   knowledge — high call volume, purely interpretive short JSON → fast/cheap.
     #   pm        — the "strong PM" stage: hardest reasoning + strict JSON.
+    #   planner   — reads the repo and decides the approach; reasoning-heavy.
     #   dev       — precise SEARCH/REPLACE instruction-following.
     #   review    — a different pool/model from Dev for a less biased review.
     knowledge_model: str = "openai/gpt-oss-20b"
     pm_model: str = "openai/gpt-oss-120b"
+    planner_model: str = ""
     dev_model: str = "openai/gpt-oss-120b"
     review_model: str = "llama-3.3-70b-versatile"
 
@@ -208,7 +260,36 @@ class Settings(BaseSettings):
     # their exact current routing (gemini-* models auto-route to Gemini, etc.).
     knowledge_provider: str = ""
     pm_provider: str = ""
+    planner_provider: str = ""
     dev_provider: str = ""
+
+    # --- Review jury (services/jury) ---
+    # The Review stage runs as an ensemble: several specialized judges review the
+    # same change independently from different engineering perspectives, and a
+    # foreperson merges their opinions into one verdict. The roster itself lives
+    # in the Judge table (runtime-editable, see services/judges.py) — these are
+    # the panel-wide knobs.
+    # Off = the classic single-reviewer path (review_provider + review_model).
+    jury_enabled: bool = True
+    # How many judges are polled at once. Each judge is one LLM call, so the
+    # panel multiplies the review stage's cost by its size; the cap also keeps
+    # free-tier providers from rate-limiting the whole panel at once.
+    jury_max_parallel: int = 4
+    # Findings a judge reports below this confidence are dismissed by the
+    # foreperson rather than sent back to Dev. 0.5 = "the judge was guessing".
+    jury_min_confidence: float = 0.5
+    # The foreperson (synthesis) stage. Empty = reuse the Review stage's
+    # provider/model. This is the one call that should be a strong model: it is
+    # cheap (no diff, just opinions) and it decides.
+    jury_synthesis_provider: str = ""
+    jury_synthesis_model: str = ""
+    # Repository lookups a reviewing stage (each juror, and QA) may request
+    # before it commits to a verdict. A diff shows what changed, not what
+    # depends on it, so a finding about code outside the diff is a guess unless
+    # it was checked — and a wrong blocking finding costs a full paid
+    # Dev+QA+Review round. Only a stage that ASKS pays for the extra call; one
+    # follow-up round, never a loop. 0 disables reachback for reviewers.
+    jury_tool_calls: int = 3
 
     # --- Agentic Dev loop (openai_agent.code) ---
     # Max model calls per ticket: round 1 edits, then verify-against-diff rounds.
@@ -248,6 +329,22 @@ class Settings(BaseSettings):
     # first, then the PM pulls more knowledge only as it decides it needs it.
     pm_max_retrieval_rounds: int = 3
 
+    # --- Planner agent (services/planner.py) ---
+    # Runs at pipeline entry, after the scope is locked and the knowledge layers
+    # are refreshed, and decides HOW the change is made: which code produces the
+    # behaviour, what else touches it, in what order to change it. Its symbols are
+    # then verified against the graph/ripgrep before anything consumes them.
+    # Off = the Dev agent works from the scope alone (the ablation the research
+    # measures as falling back to single-agent performance).
+    planner_enabled: bool = True
+    # Retrieve/decide rounds per plan. The research puts a Planner at 3-5.
+    planner_max_rounds: int = 4
+    # Inject the plan-named files' real contents into the Dev prompt. Measured to
+    # matter (it is what beat a cold `claude -p` on the rich benchmark); scoped to
+    # what the plan names rather than everything anyone guessed. Off = pure
+    # reachback, Dev pulls everything through its tools.
+    dev_inject_file_contents: bool = True
+
     # Where agents check out working copies (cloned per repo).
     repos_dir: str = "./.workspace"
 
@@ -269,8 +366,8 @@ class Settings(BaseSettings):
     # --- Agent identity on deliveries ---
     # Commits the pipeline makes are authored by this name/email, so the change
     # history shows the agent (not whoever's laptop the server runs on).
-    agent_git_name: str = "AutoDev Agent"
-    agent_git_email: str = "autodev-agent@users.noreply.github.com"
+    agent_git_name: str = "CodeJury Agent"
+    agent_git_email: str = "codejury-agent@users.noreply.github.com"
     # Optional GitHub token of a dedicated bot/machine account. When set, branch
     # pushes and `gh pr create` authenticate as that account, so the PR itself is
     # "created by" the agent on GitHub. Without it, gh falls back to the host's
@@ -297,9 +394,19 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
+# The Planner reasons about the repo like the PM reasons about the requirement,
+# so it inherits the PM stage's routing rather than the generic QA default —
+# an install that predates the Planner gets its strongest configured reasoner
+# on it, which is where it belongs.
+if not settings.planner_model:
+    settings.planner_model = settings.pm_model
+if not settings.planner_provider:
+    settings.planner_provider = settings.pm_provider
+
 # Per-stage models default to qa_model when left unset, so a single QA_MODEL still
 # configures the whole system if the operator doesn't split them.
-for _stage_field in ("knowledge_model", "pm_model", "dev_model", "review_model"):
+for _stage_field in ("knowledge_model", "pm_model", "planner_model", "dev_model",
+                     "review_model"):
     if not getattr(settings, _stage_field):
         setattr(settings, _stage_field, settings.qa_model)
 
@@ -344,6 +451,8 @@ if not settings.knowledge_provider:
     settings.knowledge_provider = _provider_for_model(settings.knowledge_model)
 if not settings.pm_provider:
     settings.pm_provider = _provider_for_model(settings.pm_model)
+if not settings.planner_provider:
+    settings.planner_provider = _provider_for_model(settings.planner_model)
 if not settings.dev_provider:
     if settings.coding_provider == "auto":
         settings.dev_provider = "auto"

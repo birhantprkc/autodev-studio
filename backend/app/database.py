@@ -21,12 +21,14 @@ def _migrate() -> None:
             ("pm_tokens_input", "INTEGER DEFAULT 0"),
             ("pm_tokens_output", "INTEGER DEFAULT 0"),
             ("pm_cost_usd", "FLOAT DEFAULT 0"),
+            ("plan", "JSON"),
         ],
         "task": [
             ("jira_key", "VARCHAR"),
             ("jira_url", "VARCHAR"),
             ("affected_files", "JSON"),
             ("target_symbols", "JSON"),
+            ("review_findings", "JSON"),
         ],
         "repo": [
             ("kb_knowledge_count", "INTEGER DEFAULT 0"),

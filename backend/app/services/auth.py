@@ -28,7 +28,7 @@ from ..models import ROLE_RANK, AppSetting, AuthSession, User, UserRole, utcnow
 
 logger = logging.getLogger(__name__)
 
-COOKIE_NAME = "autodev_session"
+COOKIE_NAME = "codejury_session"
 SESSION_TTL = timedelta(days=14)
 _PBKDF2_ITERATIONS = 200_000
 

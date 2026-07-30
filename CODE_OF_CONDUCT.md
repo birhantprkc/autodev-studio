@@ -44,7 +44,7 @@ individual is officially representing the community in public spaces.
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to
 the maintainers via GitHub's private
-[report abuse](https://github.com/krishagarwal314/autodev-studio/issues) flow or by
+[report abuse](https://github.com/krishagarwal314/codejury/issues) flow or by
 opening a confidential security advisory. All complaints will be reviewed and
 investigated promptly and fairly.
 

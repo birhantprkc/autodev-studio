@@ -91,32 +91,29 @@ def ingest(repo_id: int) -> None:
         kb_cost = 0.0
         overview = ""
         if local:
-            # Structured multi-view knowledge (architecture, modules, features, …)
-            # is the ONLY thing we build: AST facts → LLM-written knowledge docs →
-            # embedded docs. We deliberately do NOT embed raw code chunks (that was
-            # multi-GB RAM for little value); the agents ground on these docs.
+            # The knowledge build is deterministic and free: the code graph
+            # (AST of every file → definitions, calls, routes; built by the
+            # codebase-memory-mcp binary in seconds) plus the symbol-map
+            # fallback tier. No LLM cost, no embedding service.
             from .knowledge import pipeline as knowledge_pipeline
 
-            if knowledge_pipeline.enabled():
-                def _progress(step: str, pct: int) -> None:
-                    with Session(engine) as db2:
-                        r = db2.get(Repo, repo_id)
-                        if r is not None:
-                            r.kb_step, r.kb_progress = step, pct
-                            db2.add(r)
-                            db2.commit()
+            def _progress(step: str, pct: int) -> None:
+                with Session(engine) as db2:
+                    r = db2.get(Repo, repo_id)
+                    if r is not None:
+                        r.kb_step, r.kb_progress = step, pct
+                        db2.add(r)
+                        db2.commit()
 
-                kr = knowledge_pipeline.generate(repo_url, progress=_progress)
-                kb_tokens_in, kb_tokens_out, kb_cost = kr.tokens_in, kr.tokens_out, kr.cost
-                if kr.generated:
-                    knowledge_count = kr.doc_count
-                    knowledge_views = kr.counts
-                    if kr.overview:
-                        overview = kr.overview  # prefer the structured overview
-                    logger.info("Knowledge: %d views for %s ($%.4f)",
-                                kr.doc_count, repo_url, kr.cost)
-                elif kr.error:
-                    logger.info("Knowledge build skipped/failed for %s: %s", repo_url, kr.error)
+            kr = knowledge_pipeline.generate(repo_url, progress=_progress)
+            if kr.generated:
+                knowledge_count = kr.doc_count
+                knowledge_views = kr.counts
+                if kr.overview:
+                    overview = kr.overview  # prefer the structured overview
+                logger.info("Knowledge: %d graph nodes for %s", kr.doc_count, repo_url)
+            elif kr.error:
+                logger.info("Knowledge build skipped/failed for %s: %s", repo_url, kr.error)
         else:
             # First query clones+embeds the repo inside DeepWiki (can take minutes).
             overview = ask(
@@ -130,7 +127,7 @@ def ingest(repo_id: int) -> None:
             repo = db.get(Repo, repo_id)
             repo.kb_status = KBStatus.ready.value
             repo.kb_progress = 100
-            repo.kb_step = (f"Ready — {knowledge_count} knowledge views over {doc_count} files"
+            repo.kb_step = (f"Ready — code graph: {knowledge_count} nodes over {doc_count} files"
                             if knowledge_count else "Knowledge base ready")
             repo.kb_doc_count = doc_count
             repo.kb_knowledge_count = knowledge_count

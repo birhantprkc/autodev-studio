@@ -3,14 +3,17 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "autodev-studio"
+name = "codejury"
 version = "0.1.0"
-description = "A multi-agent SDLC harness: scope, code, test, review and ship changes to a real Git repo, grounded in a knowledge base of that repo."
+description = "A terminal-first coding agent whose changes are reviewed by a jury of independent LLM judges, and which localizes work through a persistent code graph with semantic search instead of burning tokens rediscovering the repo."
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.11"
 authors = [{ name = "Krish Agarwal" }]
-keywords = ["llm", "agents", "sdlc", "rag", "code-generation", "developer-tools"]
+keywords = [
+  "llm", "agents", "cli", "llm-as-a-judge", "ensemble-judge", "code-review",
+  "code-graph", "semantic-search", "rag", "code-generation", "developer-tools",
+]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",
@@ -21,34 +24,68 @@ classifiers = [
 ]
 
 dependencies = [
+  # --- Terminal client (the default surface) ---
+  # rich renders the transcript, tables and the live pipeline view;
+  # prompt_toolkit owns input (history, completion, real line editing on every
+  # platform); textual provides the three full-screen panels — review, settings
+  # and the jury roster — that don't fit in a scrolling conversation.
+  "rich>=13.7",
+  "prompt_toolkit>=3.0.43",
+  "textual>=0.79",
+  # --- Web UI + JSON API (`codejury serve`) ---
   "fastapi>=0.110",
   "uvicorn[standard]>=0.29",
+  "python-multipart>=0.0.9",
+  "jinja2>=3.1",
+  # --- Shared ---
   "sqlmodel>=0.0.16",
   "pydantic>=2.6",
   "pydantic-settings>=2.2",
-  "python-multipart>=0.0.9",
   "httpx>=0.27",
-  "jinja2>=3.1",
   # Native Anthropic Messages API (the `anthropic` provider) + Fernet
-  # encryption-at-rest for API keys saved from the Settings screen.
+  # encryption-at-rest for API keys saved from Settings.
   "anthropic>=0.40",
   "cryptography>=42",
 ]
 
 [project.optional-dependencies]
-# Local knowledge base: free local embeddings + an embedded vector DB. Without
-# these the RAG falls back to a pure-Python TF-IDF index (no extra deps).
+# The knowledge base's primary localization + structural layer is the external
+# `codebase-memory-mcp` static binary (a persistent code graph: definitions,
+# call edges, routes; 158 languages via bundled tree-sitter grammars and
+# bundled embeddings). It is not a Python dependency — install it separately
+# (npm / PyPI / Homebrew / Scoop / a GitHub release) so the pipeline can shell
+# out to it. Without it the KB degrades to the symbol-map + ripgrep tier below.
+#
+# ripgrep is likewise an external binary, not a Python dependency: it is the
+# lexical channel every agent's `grep` tool and the retrieval pipeline's
+# refinement stage run on. Install it from your package manager
+# (`apt install ripgrep`, `brew install ripgrep`, `cargo install ripgrep`).
+# Without it those calls fall back to `git grep` — functional, but tracked files
+# only and no per-language definition patterns.
+#
+# The [semantic] extra adds the local dense-embedding channel: real contextual
+# embeddings (fastembed, ONNX/CPU, no Docker/API) over the graph's nodes, stored
+# in an embedded Qdrant collection and fused with BM25 via RRF. Without it,
+# retrieval is BM25-only.
 semantic = [
   "fastembed>=0.3",
   "qdrant-client>=1.9",
 ]
-# Exact symbol extraction + edit-time parse gates for JS/TS/Go/Rust/Java/Ruby
-# via real parse trees (grammars lazy-loaded per language). Without it the
-# language layer falls back to the built-in regex extractors — Python is
-# always exact via stdlib ast either way.
+#
+# Exact symbol extraction for the fallback tier (JS/TS/Go/Rust/Java/Ruby) via
+# real parse trees (grammars lazy-loaded per language). Without it the language
+# layer falls back to the built-in regex extractors — Python is always exact
+# via stdlib ast either way.
 treesitter = [
   "tree-sitter>=0.23",
   "tree-sitter-language-pack>=0.7",
+]
+# A local cross-encoder as the strongest reranking tier. The default
+# deterministic reranker is free and always available, so this is genuinely
+# optional — it is a real model in memory, and this pipeline runs on machines
+# where that matters.
+rerank = [
+  "fastembed>=0.3",
 ]
 dev = [
   "pytest>=8.0",
@@ -62,7 +99,7 @@ Documentation = "https://github.com/krishagarwal314/autodev-studio/tree/main/doc
 Issues = "https://github.com/krishagarwal314/autodev-studio/issues"
 
 [project.scripts]
-autodev = "app.cli:main"
+codejury = "app.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["backend"]
@@ -75,7 +112,7 @@ app = ["templates/*.html", "static/*"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-extend-exclude = [".workspace", ".knowledge", ".qdrant", "benchmarks"]
+extend-exclude = [".workspace", ".knowledge", "benchmarks"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM"]

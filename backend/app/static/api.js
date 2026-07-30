@@ -1,4 +1,4 @@
-// REST client for the AutoDev Studio backend. Auth is cookie-based; a 401
+// REST client for the CodeJury backend. Auth is cookie-based; a 401
 // anywhere bounces the browser to /login.
 const API = {
   async _req(method, path, body) {
@@ -37,7 +37,17 @@ const API = {
   refreshBackends() { return this.post("/api/settings/backends/refresh"); },
   installBackend(id) { return this.post(`/api/settings/backends/${id}/install`); },
   providerModels(id) { return this.get(`/api/settings/providers/${id}/models`); },
-  testEmbeddings() { return this.post("/api/settings/embeddings/test"); },
+  testGraph() { return this.post("/api/settings/graph/test"); },
+  testSearch() { return this.post("/api/settings/search/test"); },
+
+  // review jury (the panel roster)
+  jury() { return this.get("/api/jury"); },
+  addJudge(body) { return this.post("/api/jury/judges", body); },
+  updateJudge(id, body) { return this.patch(`/api/jury/judges/${id}`, body); },
+  moveJudge(id, delta) { return this.post(`/api/jury/judges/${id}/move`, { delta }); },
+  deleteJudge(id) { return this.del(`/api/jury/judges/${id}`); },
+  spreadJudges() { return this.post("/api/jury/spread"); },
+  resetJury() { return this.post("/api/jury/reset"); },
 
   // overview / repos
   overview(repoId, sessionId) { const q = sessionId ? `?session_id=${sessionId}` : (repoId ? `?repo_id=${repoId}` : ""); return this.get("/overview" + q); },

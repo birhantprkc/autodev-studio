@@ -1,7 +1,7 @@
 """Provider registry — the single source of truth for which LLM providers exist,
 where they live, which key they use, and which models they offer.
 
-Each pipeline stage (knowledge, pm, dev, qa, review) stores a
+Each pipeline stage (knowledge, pm, planner, dev, qa, review) stores a
 ``<stage>_provider`` + ``<stage>_model`` in config; routing resolves the endpoint
 from the provider id here instead of guessing from the model name. A provider has
 one of three "kinds":
@@ -28,7 +28,7 @@ from dataclasses import dataclass
 
 from ..config import settings
 
-STAGES: tuple[str, ...] = ("knowledge", "pm", "dev", "qa", "review")
+STAGES: tuple[str, ...] = ("knowledge", "pm", "planner", "dev", "qa", "review")
 
 
 @dataclass(frozen=True)
@@ -180,9 +180,10 @@ def stage_provider_ids(stage: str) -> list[str]:
         return ["auto"] + _CODE_PROVIDERS
     if stage == "review":
         return list(_CODE_PROVIDERS)
-    # Chat stages (knowledge/pm/qa) may also run through any agentic CLI (pure-chat
-    # invocation via agent_backends.chat) — for Claude, the only path when no
-    # ANTHROPIC_API_KEY is set.
+    # Chat stages (knowledge/pm/planner/qa) may also run through any agentic CLI
+    # (pure-chat invocation via agent_backends.chat) — for Claude, the only path
+    # when no ANTHROPIC_API_KEY is set. The Planner in particular is a natural fit:
+    # it is read-only and reaches the same index tools through the shim.
     return list(_CHAT_PROVIDERS) + _AGENT_PROVIDERS
 
 
@@ -294,6 +295,9 @@ def stage_model(stage: str) -> str:
 _ANTHROPIC_PRESET = {
     "knowledge": ("anthropic", "claude-haiku-4-5"),
     "pm": ("anthropic", "claude-opus-4-8"),
+    # The Planner decides where every edit lands; a weak model here is paid for
+    # by every downstream stage, so it gets the preset's strongest reasoner.
+    "planner": ("anthropic", "claude-opus-4-8"),
     "dev": ("claude-cli", "sonnet"),
     "qa": ("anthropic", "claude-sonnet-5"),
     "review": ("claude-cli", "opus"),
@@ -308,6 +312,9 @@ def preset_values(provider_id: str) -> dict[str, str]:
         for stage, (pid, model) in _ANTHROPIC_PRESET.items():
             out[f"{stage}_provider"] = pid
             out[f"{stage}_model"] = model
+        # The jury's foreperson decides; give it the preset's strongest model.
+        out["jury_synthesis_provider"] = "anthropic"
+        out["jury_synthesis_model"] = "claude-opus-4-8"
         return out
     p = PROVIDERS.get(provider_id)
     if p is None or provider_id == "claude-cli":
@@ -318,6 +325,8 @@ def preset_values(provider_id: str) -> dict[str, str]:
     for stage in STAGES:
         out[f"{stage}_provider"] = provider_id
         out[f"{stage}_model"] = p.default_model
+    out["jury_synthesis_provider"] = provider_id
+    out["jury_synthesis_model"] = p.default_model
     return out
 
 

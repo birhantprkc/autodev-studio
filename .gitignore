@@ -8,6 +8,11 @@
 *.db
 *.db-journal
 *.db-wal
+
+# Terminal-client state, kept beside the database it refers to: which repo and
+# scope this checkout is working on, and the command history.
+*.cli.json
+*.history
 # Cloned working copies the agents edit
 **/.workspace/
 # Embedded Qdrant vector store
@@ -37,3 +42,7 @@ htmlcov/
 .idea/
 .DS_Store
 *.swp
+
+# Flat PNG render of the hero SVG — produced by docs/capture_hero.py for local
+# viewing only; the README embeds the SVG.
+docs/screenshots/cli-hero-preview.png

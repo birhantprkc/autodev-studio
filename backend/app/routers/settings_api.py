@@ -79,10 +79,20 @@ def install_backend(backend_id: str) -> dict:
     return view
 
 
-@router.post("/embeddings/test", dependencies=[Depends(auth.require_user)])
-def test_embeddings() -> dict:
-    """One tiny embed with the currently saved embedding settings — proves the
-    engine (local model or the operator's API endpoint) actually works."""
-    from ..services import local_rag
+@router.post("/graph/test", dependencies=[Depends(auth.require_user)])
+def test_graph() -> dict:
+    """Locate the code-graph binary and read its version — proves the knowledge
+    engine can actually run on this host with the current settings."""
+    from ..services.knowledge import graph
 
-    return local_rag.embedding_probe()
+    return graph.probe()
+
+
+@router.post("/search/test", dependencies=[Depends(auth.require_user)])
+def test_search() -> dict:
+    """Report which lexical engine is live (ripgrep, or the git grep fallback).
+    The two differ in recall, so which one is answering is worth showing rather
+    than leaving the operator to infer it from results."""
+    from ..services import search
+
+    return search.probe()

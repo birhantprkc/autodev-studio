@@ -116,8 +116,16 @@ FIELDS: dict[str, Spec] = {
                                          "Builds the structured repo views on ingest — high call volume."),
     "knowledge_model": _model_spec("knowledge", "Knowledge model", "Model for the knowledge stage."),
     "pm_provider": _provider_spec("pm", "PM provider",
-                                  "Scopes requirements and drafts tickets — the hardest reasoning stage."),
+                                  "Talks to the human: clarifies the requirement and writes the "
+                                  "acceptance criteria. It does not choose edit targets."),
     "pm_model": _model_spec("pm", "PM model", "Model for the PM stage."),
+    "planner_provider": _provider_spec("planner", "Planner provider",
+                                       "Reads the repository through the code graph and decides HOW "
+                                       "the change is made: which code produces the behaviour, what "
+                                       "else touches it, in what order. Its pins drive Dev, QA and "
+                                       "the jury, so a weak model here is paid for by every stage "
+                                       "downstream."),
+    "planner_model": _model_spec("planner", "Planner model", "Model for the Planner stage."),
     "dev_provider": _provider_spec("dev", "Dev provider",
                                    "Who writes the code: any installed agentic CLI (Claude Code, Codex, "
                                    "Cursor, Aider, Gemini CLI) or an OpenAI-compatible loop. 'auto' tries "
@@ -143,7 +151,56 @@ FIELDS: dict[str, Spec] = {
                                   "Hard dollar ceiling per Claude CLI run. 0 disables the cap.",
                                   type="float", min=0, max=50, section="Advanced"),
 
+    # --- Review jury (the panel roster itself is edited on the Jury tab) ---
+    "jury_enabled": Spec("jury", "Multi-judge review",
+                         "Review the change with an ensemble of specialized judges instead of "
+                         "one reviewer, then synthesize their opinions into one verdict. Off = "
+                         "the single Review stage model above does it alone.", type="bool"),
+    "jury_synthesis_provider": Spec("jury", "Foreperson provider",
+                                    "Merges the judges' opinions, resolves their disagreements "
+                                    "and decides. Worth a strong model — it's a cheap call (no "
+                                    "diff, just opinions) and it makes the call.",
+                                    type="provider", options=providers.stage_provider_ids("review"),
+                                    model_field="jury_synthesis_model",
+                                    show_if="jury_enabled=true"),
+    "jury_synthesis_model": Spec("jury", "Foreperson model",
+                                 "Model for the synthesis stage.", type="model",
+                                 provider_field="jury_synthesis_provider",
+                                 show_if="jury_enabled=true"),
+    "jury_min_confidence": Spec("jury", "Confidence floor",
+                                "Findings a judge reports below this confidence are dismissed "
+                                "instead of sent back to Dev. Raise it if the panel is blocking "
+                                "on speculation; lower it if real defects are slipping through.",
+                                type="float", min=0.0, max=1.0, show_if="jury_enabled=true"),
+    "jury_max_parallel": Spec("jury", "Judges in parallel",
+                              "How many judges are polled at once. Lower this if a free-tier "
+                              "provider rate-limits the panel.",
+                              type="int", min=1, max=8, show_if="jury_enabled=true"),
+    "jury_tool_calls": Spec("jury", "Reviewer lookups",
+                            "Repository lookups a judge (and QA) may request before voting. A "
+                            "diff shows what changed, not what depends on it — without this, "
+                            "\"breaks callers\" or \"doesn't match the pattern\" are guesses "
+                            "about code the reviewer never saw, and a wrong blocking finding "
+                            "costs a full revision round. Only a judge that ASKS pays for the "
+                            "extra call. 0 = reviewers judge from the diff alone.",
+                            type="int", min=0, max=8),
+
     # --- Pipeline limits ---
+    "planner_enabled": Spec("pipeline", "Planner stage",
+                            "Before Dev writes anything, a Planner agent reads the repository "
+                            "and decides which code changes and in what order — then every "
+                            "symbol it named is verified against the code graph. Off = Dev "
+                            "works from the scope alone, which measurably drops a multi-agent "
+                            "pipeline to single-agent performance.", type="bool"),
+    "planner_max_rounds": Spec("pipeline", "Planner rounds",
+                               "Retrieve/decide rounds the Planner may take before it must "
+                               "commit to a plan.", type="int", min=1, max=8,
+                               show_if="planner_enabled=true"),
+    "dev_inject_file_contents": Spec("pipeline", "Pre-read the plan's files",
+                                     "Put the real contents of the files the plan names into the "
+                                     "Dev prompt, so it edits instead of re-reading them (~70% of "
+                                     "a Dev run's input tokens used to go on rediscovery). Off = "
+                                     "Dev pulls everything through its own tools.", type="bool"),
     "max_revision_rounds": Spec("pipeline", "Max revise rounds",
                                 "If QA fails or Review requests changes, feedback goes back to Dev and "
                                 "QA+Review re-run — up to this many times.", type="int", min=0, max=6),
@@ -169,34 +226,105 @@ FIELDS: dict[str, Spec] = {
                            "How much of each file the Dev model sees. 30K covers most source files whole.",
                            type="int", min=4000, max=200000),
 
-    # --- Knowledge base → Embeddings (pluggable: local default, bring-your-own
-    #     API endpoint, or the zero-dependency tfidf fallback) ---
-    "rag_embeddings": Spec("knowledge", "Embedding engine",
-                           "local = built-in fastembed, free, runs on this machine (default). "
-                           "api = your own OpenAI-compatible /embeddings endpoint — OpenAI, Gemini, "
-                           "Voyage, or a local Ollama/LM Studio server. tfidf = pure-Python keyword "
-                           "matching, no downloads. After switching, re-index repos (Repos → Reindex).",
-                           type="enum", options=["semantic", "api", "tfidf"],
-                           section="Embeddings"),
+    # --- Knowledge base → Code graph (the deterministic localization engine) ---
+    "graph_enabled": Spec("knowledge", "Code graph",
+                          "Index each repo into a persistent knowledge graph (definitions, call "
+                          "edges, imports, HTTP routes; 158 languages) via the codebase-memory-mcp "
+                          "binary — the localization layer the agents ground on. Deterministic, "
+                          "free, RAM-first (seconds per repo). Off = fall back to the built-in "
+                          "symbol map + ripgrep.", type="bool", section="Code graph"),
+    "graph_binary": Spec("knowledge", "Graph binary",
+                         "Binary name on PATH or an absolute path to it. Install via npm/PyPI/"
+                         "Homebrew/Scoop (`codebase-memory-mcp`) or a GitHub release download.",
+                         section="Code graph", show_if="graph_enabled=true"),
+    "graph_index_mode": Spec("knowledge", "Index mode",
+                             "full = structural + similarity + semantic-embedding edges (enables "
+                             "semantic search). moderate = structural + similarity. fast = "
+                             "structural only (quickest, no semantic search).",
+                             type="enum", options=["full", "moderate", "fast"],
+                             section="Code graph", show_if="graph_enabled=true"),
+    # --- Knowledge base → Code search (the lexical channel) ---
+    "ripgrep_enabled": Spec("knowledge", "ripgrep",
+                            "Use ripgrep as the lexical search engine: identifier-aware "
+                            "matching, per-language definition patterns, .gitignore-aware, "
+                            "and the `grep` tool every agent can call mid-run. It is the "
+                            "channel that sees what an AST index can't — strings, comments, "
+                            "config, templates. Off (or binary missing) = `git grep`: "
+                            "tracked files only, no type filters.",
+                            type="bool", section="Code search"),
+    "ripgrep_path": Spec("knowledge", "ripgrep binary",
+                         "Binary name on PATH or an absolute path to it. Install with "
+                         "`apt install ripgrep`, `brew install ripgrep`, or "
+                         "`cargo install ripgrep`.",
+                         section="Code search", show_if="ripgrep_enabled=true"),
+
+    # --- Knowledge base → Semantic search (local dense embeddings) ---
+    "local_embeddings": Spec("knowledge", "Semantic search",
+                             "Embed the code graph's symbols with a local model (fastembed, CPU, "
+                             "no Docker/API) and fuse with keyword search. Doubles 'describe it in "
+                             "English and find the code' recall (measured 8/10 vs 4/10). Needs the "
+                             "[semantic] extra; off = keyword-only.",
+                             type="bool", section="Semantic search"),
     "embedding_model": Spec("knowledge", "Embedding model",
-                            "For 'semantic': a fastembed model id (default BAAI/bge-small-en-v1.5). "
-                            "For 'api': the endpoint's model id, e.g. text-embedding-3-small (OpenAI) "
-                            "or nomic-embed-text (Ollama).", section="Embeddings",
-                            show_if="rag_embeddings=semantic|api"),
-    "embedding_api_base_url": Spec("knowledge", "Embeddings API base URL",
-                                   "e.g. https://api.openai.com/v1, or "
-                                   "http://localhost:11434/v1 for local Ollama.",
-                                   section="Embeddings", show_if="rag_embeddings=api"),
-    "embedding_api_key": Spec("knowledge", "Embeddings API key",
-                              "Leave empty for local servers (Ollama/LM Studio) "
-                              "that don't need one.", secret=True, section="Embeddings",
-                              show_if="rag_embeddings=api"),
-    "generate_knowledge": Spec("knowledge", "Structured knowledge views",
-                               "Analyze each repo into architecture/module/feature views the PM scopes "
-                               "against (LLM cost on ingest).", type="bool"),
+                            "A fastembed model id. Default nomic-embed-text-v1.5-Q (768d, ~130MB, "
+                            "code-capable). Stronger for code: jinaai/jina-embeddings-v2-base-code "
+                            "(~640MB). Re-index repos after changing this.",
+                            section="Semantic search", show_if="local_embeddings=true"),
+    "rrf_dense_weight": Spec("knowledge", "Semantic weight",
+                             "How much the semantic channel outweighs keyword search when the two "
+                             "are fused. 1 = equal (measurably worse — keyword noise crowds out "
+                             "correct semantic hits); 2 is the tuned default.",
+                             type="float", min=0.0, max=5.0,
+                             section="Semantic search", show_if="local_embeddings=true"),
+    # --- Knowledge base → Retrieval pipeline (the stages every agent calls) ---
+    "graph_expansion": Spec("knowledge", "Call-graph expansion",
+                            "After ranking, pull each top hit's neighbourhood — callers, callees, "
+                            "class members, the tests that already cover it — into the results. "
+                            "Matching finds the symbol; adjacency finds what breaks when you "
+                            "change it.", type="bool", section="Retrieval pipeline"),
+    "graph_hops": Spec("knowledge", "Expansion hops",
+                       "How far to expand. 1 is the tuned default and what the research measured "
+                       "as a clear gain; 2 was measured as a LOSS when flattened into a prompt "
+                       "(the model drowns), and exists here for ablation.",
+                       type="int", min=1, max=2,
+                       section="Retrieval pipeline", show_if="graph_expansion=true"),
+    "grep_refine": Spec("knowledge", "Lexical refinement",
+                        "Finish each retrieval with a ripgrep pass over the identifiers in the "
+                        "query, catching occurrences an AST index cannot model — strings, "
+                        "comments, config, templates.",
+                        type="bool", section="Retrieval pipeline"),
+    "snippet_context": Spec("knowledge", "Attach source",
+                            "Include the real source of the top-ranked locations in results, so "
+                            "an agent edits instead of spending a tool call reading back every "
+                            "pin it was just given.", type="bool", section="Retrieval pipeline"),
+    "snippet_summarize": Spec("knowledge", "Summarize large symbols",
+                              "A symbol too big to inline is summarized by the knowledge model "
+                              "(cached per commit) rather than truncated mid-function.",
+                              type="bool", section="Retrieval pipeline",
+                              show_if="snippet_context=true"),
+    "rerank_mode": Spec("knowledge", "Reranking",
+                        "How the merged candidate pool is ordered. 'deterministic' is free and "
+                        "always available (it weighs the fused rank, source-vs-test, and the "
+                        "Planner's verified targets). 'llm' adds one scoring call per retrieval "
+                        "— accurate, but retrieval happens many times per run. 'cross-encoder' "
+                        "needs the [rerank] extra installed. A tier that can't run falls back to "
+                        "deterministic rather than to an unranked pool. 'off' keeps the fused "
+                        "order untouched — for measuring what the reranker is worth.",
+                        type="enum", options=["deterministic", "llm", "cross-encoder", "off"],
+                        section="Retrieval pipeline"),
+    "rerank_provider": Spec("knowledge", "Rerank provider",
+                            "Which provider scores the candidates. Empty = the knowledge stage's.",
+                            type="provider", options=[""] + providers.stage_provider_ids("knowledge"),
+                            model_field="rerank_model",
+                            section="Retrieval pipeline", show_if="rerank_mode=llm"),
+    "rerank_model": Spec("knowledge", "Rerank model",
+                         "Model for the rerank call. Empty = the knowledge stage's.",
+                         type="model", provider_field="rerank_provider",
+                         section="Retrieval pipeline", show_if="rerank_mode=llm"),
+
     "kb_auto_refresh": Spec("knowledge", "Auto-refresh on drift",
-                            "Refresh the knowledge base at pipeline entry when the repo's origin has moved.",
-                            type="bool"),
+                            "Reindex the code graph + symbol map at pipeline entry when the repo's "
+                            "origin has moved (deterministic, free).", type="bool"),
     "kb_write_back": Spec("knowledge", "Delivery write-back",
                           "After a scope delivers, persist a delivery-note doc so future retrieval "
                           "compounds across runs.", type="bool"),
@@ -233,6 +361,9 @@ GROUPS: list[tuple[str, str, str]] = [
                                  "encrypted, stored locally, and never shown back."),
     ("models", "Agent models", "Assign a provider + model to each pipeline stage. Use the preset "
                                "to point every stage at one provider in a click."),
+    ("jury", "Review jury", "Code quality should come from several independent perspectives, not "
+                            "one model's judgement. Seat the judges, give each its own model, and "
+                            "tune how the foreperson weighs what they find."),
     ("pipeline", "Pipeline limits", "Loop bounds and request budgets."),
     ("knowledge", "Knowledge base", "How repositories are indexed and kept fresh."),
     ("delivery", "Delivery & safety", "What the pipeline is allowed to do to real repositories."),

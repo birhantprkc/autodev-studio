@@ -3,11 +3,11 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>Sign in · AutoDev Studio</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 24 24%27%3E%3Crect width=%2724%27 height=%2724%27 rx=%276%27 fill=%27%235c8ef2%27/%3E%3Cpath d=%27M12 5l1.5 4.2L18 11l-4.5 1.8L12 17l-1.5-4.2L6 11l4.5-1.8z%27 fill=%27white%27/%3E%3C/svg%3E"/>
+<title>Sign in · CodeJury</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http://www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%3E%3Cdefs%3E%3ClinearGradient%20id%3D%22g%22%20x1%3D%220%22%20y1%3D%220%22%20x2%3D%221%22%20y2%3D%221%22%3E%3Cstop%20offset%3D%220%22%20stop-color%3D%22%235c8ef2%22/%3E%3Cstop%20offset%3D%221%22%20stop-color%3D%22%238b5cf6%22/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect%20width%3D%2224%22%20height%3D%2224%22%20rx%3D%226%22%20fill%3D%22url%28%23g%29%22/%3E%3Cg%20transform%3D%22translate%282.9%202.9%29%20scale%280.758%29%22%20fill%3D%22none%22%20stroke%3D%22%23fff%22%20stroke-width%3D%222.3%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M12%203.4v17.2%22/%3E%3Cpath%20d%3D%22M8%2020.6h8%22/%3E%3Cpath%20d%3D%22M4%207.4h4c2%200%203-.6%204-1%201%20.4%202%201%204%201h4%22/%3E%3Cpath%20d%3D%22m4%207.4-2.4%205.2h4.8z%22/%3E%3Cpath%20d%3D%22m20%207.4-2.4%205.2h4.8z%22/%3E%3C/g%3E%3C/svg%3E"/>
 <link rel="stylesheet" href="/static/app.css?v={{ asset_version }}"/>
 <script>
-  try { var t = localStorage.getItem("autodev.theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+  try { var t = localStorage.getItem("codejury.theme") || localStorage.getItem("autodev.theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
 </script>
 <script src="/static/icons.js?v={{ asset_version }}"></script>
 </head>
@@ -17,8 +17,8 @@
     <div class="brand">
       <div class="mark" id="brand-mark"></div>
       <div>
-        <div class="name">AutoDev Studio</div>
-        <div class="tag">Agentic SDLC platform</div>
+        <div class="name">CodeJury</div>
+        <div class="tag">Multi-agent SDLC platform</div>
       </div>
     </div>
 
@@ -44,7 +44,7 @@
 </div>
 
 <script>
-  document.getElementById("brand-mark").innerHTML = icon("spark", 16);
+  document.getElementById("brand-mark").innerHTML = icon("codejury", 28);
   const form = document.getElementById("login-form");
   const err = document.getElementById("login-error");
   form.addEventListener("submit", async (e) => {

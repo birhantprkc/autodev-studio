@@ -17,8 +17,8 @@
         <input class="input mono" id="ingest-url" placeholder="https://github.com/org/repo" style="margin-bottom:8px"/>
         <button class="btn btn-primary btn-block" id="ingest-btn">Build knowledge base</button>
         <p class="small faint" style="margin:9px 0 0; line-height:1.5">
-          Clones, chunks and embeds the repo locally, then distills structured views
-          (architecture · modules · features · workflows) the agents scope against.
+          Clones the repo and indexes it into a code graph (definitions · call edges ·
+          routes · 158 languages) the agents scope against. Deterministic and free.
         </p>
       </div>
 
@@ -29,10 +29,10 @@
     </div>
   </aside>
 
-  <!-- Structured knowledge for the selected repo -->
+  <!-- Repository knowledge for the selected repo -->
   <section class="panel grow">
     <div class="panel-head">
-      <span class="panel-title" id="kn-title">Structured knowledge</span>
+      <span class="panel-title" id="kn-title">Repository knowledge</span>
       <div class="grow"></div>
       <span class="small faint" id="kn-count"></span>
     </div>

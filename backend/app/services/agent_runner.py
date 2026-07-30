@@ -1,5 +1,10 @@
 """Helpers to record a real agent run: create the AgentRun, stream log lines,
-and finalize with real token usage / cost."""
+and finalize with real token usage / cost.
+
+Every write here also publishes to ``services.events`` so an in-process client
+(the terminal UI) can follow a run live instead of polling the rows back out.
+The DB remains the durable record; the bus is a no-op when nobody is listening.
+"""
 
 import time
 
@@ -7,6 +12,7 @@ from sqlmodel import Session
 
 from ..database import engine
 from ..models import AgentRun, LogEntry, RunStatus, Severity, Task, utcnow
+from . import events
 
 # Placeholder shown only until the caller resolves the real provider/model and
 # calls set_model(). "pr" never calls an LLM (git/gh only) so it keeps its label.
@@ -37,6 +43,7 @@ def start_run(task_id: int, agent_type: str) -> tuple[int, float]:
             db.add(task)
         db.commit()
         db.refresh(run)
+        events.publish("run.started", run_id=run.id, task_id=task_id, agent=agent_type)
         return run.id, time.monotonic()
 
 
@@ -48,6 +55,7 @@ def set_model(run_id: int, model: str) -> None:
             run.model = model
             db.add(run)
             db.commit()
+    events.publish("run.model", run_id=run_id, model=model)
 
 
 def log(run_id: int, severity: str, message: str) -> None:
@@ -57,6 +65,7 @@ def log(run_id: int, severity: str, message: str) -> None:
         # 8000 keeps full QA/Review verdicts (~2-3k chars) intact in the log panel.
         db.add(LogEntry(run_id=run_id, severity=severity, message=message[:8000]))
         db.commit()
+    events.publish("run.log", run_id=run_id, severity=severity, message=message)
 
 
 def logger_for(run_id: int):
@@ -92,3 +101,8 @@ def finish_run(run_id: int, task_id: int, t0: float, *, tokens_in: int | None = 
             task.updated_at = utcnow()
             db.add(task)
         db.commit()
+        status, duration, model = run.status, run.duration_ms, run.model
+    events.publish("run.finished", run_id=run_id, task_id=task_id, status=status,
+                   model=model, duration_ms=duration, tokens_in=tokens_in,
+                   tokens_out=tokens_out, cost=cost, error=error,
+                   usage_unknown=tokens_in is None or tokens_out is None or cost is None)

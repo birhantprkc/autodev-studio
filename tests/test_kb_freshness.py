@@ -1,23 +1,23 @@
 """KB freshness + survival guarantees.
 
-The two invariants the pipeline's compounding knowledge depends on:
+The invariants the pipeline's compounding knowledge depends on:
 
-  1. Cross-run artifacts (delivery notes, distilled lessons, symbol map,
-     freshness meta) SURVIVE a full LLM-view rebuild — rebuilds regenerate
-     interpretation, never history.
-  2. Surviving on disk is not enough: they must also survive in RETRIEVAL.
-     `indexer.index()` drops+recreates domain collections, and lessons share
-     the `modules` collection with regenerated module docs — so the pipeline
-     must re-upsert preserved docs after a rebuild.
+  1. Cross-run artifacts (delivery notes, distilled lessons) live in the JSON
+     store and are the ONLY thing the store persists — a graph reindex never
+     touches them, so history survives a rebuild by construction.
+  2. Freshness brings both localization layers to origin/HEAD deterministically:
+     the symbol map syncs per changed file, and the code graph reindexes when
+     its SHA watermark drifts.
 
-Plus: the symbol map's incremental per-file update must work for every
-language the analyzer supports, not just Python — otherwise non-Python repos
-silently go stale at the localization layer.
+Plus: the symbol map's incremental per-file update must work for every language
+the analyzer supports, not just Python — otherwise non-Python repos silently go
+stale at the localization fallback tier.
 """
 
 from __future__ import annotations
 
-from app.services.knowledge import pipeline, store, symbol_map
+from app.config import settings
+from app.services.knowledge import freshness, store, symbol_map
 from app.services.knowledge.facts import KnowledgeDocument
 
 REPO = "https://github.com/example/freshness-test"
@@ -28,70 +28,94 @@ def _doc(doc_id: str, doc_type: str, name: str = "") -> KnowledgeDocument:
                              summary=f"summary of {doc_id}")
 
 
-class TestResetPreservesCrossRunKnowledge:
-    def _seed(self):
-        store.reset(REPO)
-        for e in store.load_index(REPO):
-            store.remove(REPO, e["id"])
-        store.save(REPO, _doc("mod_core", "module"))
+class TestStoreKeepsOnlyNotes:
+    def test_notes_persist_and_reload(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(settings, "knowledge_dir", str(tmp_path))
         store.save(REPO, _doc("delivery_scope_1", "delivery_note"))
         store.save(REPO, _doc("lessons_core", "lesson"))
-
-    def test_reset_keeps_deliveries_and_lessons(self):
-        self._seed()
-        store.reset(REPO)
         ids = {e["id"] for e in store.load_index(REPO)}
-        assert "delivery_scope_1" in ids
-        assert "lessons_core" in ids
-        assert "mod_core" not in ids
-        # the underlying JSON survived too, not just the index rows
+        assert ids == {"delivery_scope_1", "lessons_core"}
         assert store.load(REPO, "delivery_scope_1") is not None
         assert store.load(REPO, "lessons_core") is not None
-        assert store.load(REPO, "mod_core") is None
-
-    def test_save_all_after_reset_merges_preserved(self):
-        self._seed()
-        store.reset(REPO)
-        store.save_all(REPO, [_doc("mod_core", "module"), _doc("arch", "architecture")])
-        ids = {e["id"] for e in store.load_index(REPO)}
-        assert ids == {"mod_core", "arch", "delivery_scope_1", "lessons_core"}
 
 
-class TestRebuildReindexesPreservedDocs:
-    def test_generate_upserts_lessons_and_deliveries(self, monkeypatch, tmp_path):
-        """After index() rebuilt the domain collections, the preserved
-        cross-run docs must be re-upserted or lessons vanish from retrieval."""
-        store.reset(REPO)
-        for e in store.load_index(REPO):
-            store.remove(REPO, e["id"])
-        store.save(REPO, _doc("delivery_scope_9", "delivery_note"))
-        store.save(REPO, _doc("lessons_core", "lesson"))
+class TestFreshnessSyncsBothLayers:
+    def test_reindexes_graph_and_syncs_symbol_map_on_drift(self, monkeypatch, tmp_path):
+        """When origin/HEAD has moved past both watermarks, freshness rebuilds
+        the symbol map and reindexes the code graph — both deterministic."""
+        monkeypatch.setattr(settings, "knowledge_dir", str(tmp_path))
+        monkeypatch.setattr(settings, "kb_auto_refresh", True)
+        (tmp_path / ".git").mkdir()
 
-        fresh = [_doc("mod_core", "module"), _doc("repository", "repository")]
-        indexed: list[list[str]] = []
-        upserted: list[list[str]] = []
+        monkeypatch.setattr(freshness.git_ops, "workdir", lambda url: tmp_path)
+        monkeypatch.setattr(freshness.git_ops, "default_branch", lambda p: "main")
+        monkeypatch.setattr(freshness.git_ops, "rev_parse", lambda p, ref=None: "newsha999")
 
-        class FakeFacts:
-            files = [object()]
+        # No symbol map yet → build; graph available with a stale watermark → reindex.
+        built = {}
 
-        monkeypatch.setattr(pipeline, "enabled", lambda: True)
-        monkeypatch.setattr(pipeline.analyzer, "analyze_repo", lambda url: FakeFacts())
-        monkeypatch.setattr(pipeline.generator, "generate_knowledge",
-                            lambda facts, max_modules, progress: (
-                                fresh, {"tokens_in": 0, "tokens_out": 0, "cost": 0.0}))
-        monkeypatch.setattr(pipeline.indexer, "index",
-                            lambda url, docs: indexed.append([d.id for d in docs]))
-        monkeypatch.setattr(pipeline.indexer, "upsert",
-                            lambda url, docs: upserted.append(sorted(d.id for d in docs)))
-        monkeypatch.setattr(pipeline.git_ops, "workdir", lambda url: tmp_path)
-        monkeypatch.setattr(pipeline.git_ops, "rev_parse", lambda p: "abc123def")
-        monkeypatch.setattr(pipeline.symbol_map, "build", lambda url, sha: None)
-        monkeypatch.setattr(pipeline.retriever, "overview", lambda url: "")
+        def _build(url, sha):
+            built["sha"] = sha
+            return _FakeMap(sha)
 
-        result = pipeline.generate(REPO)
-        assert result.generated, result.error
-        assert indexed == [["mod_core", "repository"]]
-        assert upserted == [["delivery_scope_9", "lessons_core"]]
+        monkeypatch.setattr(freshness.symbol_map, "load", lambda url: None)
+        monkeypatch.setattr(freshness.symbol_map, "build", _build)
+
+        reindexed = {}
+
+        def _reindex(url, sha):
+            reindexed["sha"] = sha
+            return True
+
+        monkeypatch.setattr(freshness.graph, "available", lambda: True)
+        monkeypatch.setattr(freshness.graph, "indexed_sha", lambda url: "oldsha000")
+        monkeypatch.setattr(freshness.graph, "ensure_indexed", _reindex)
+        monkeypatch.setattr(freshness.write_back, "reconcile_unmerged",
+                            lambda url, path, on_event=None: 0)
+
+        out = freshness.refresh_if_stale(REPO)
+        assert built["sha"] == "newsha999"
+        assert reindexed["sha"] == "newsha999"
+        assert "graph_reindexed" in out["action"]
+        assert "symbol_map_built" in out["action"]
+
+    def test_graph_skipped_when_watermark_current(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(settings, "knowledge_dir", str(tmp_path))
+        monkeypatch.setattr(settings, "kb_auto_refresh", True)
+        (tmp_path / ".git").mkdir()
+        monkeypatch.setattr(freshness.git_ops, "workdir", lambda url: tmp_path)
+        monkeypatch.setattr(freshness.git_ops, "default_branch", lambda p: "main")
+        monkeypatch.setattr(freshness.git_ops, "rev_parse", lambda p, ref=None: "sha_same")
+        monkeypatch.setattr(freshness.symbol_map, "load", lambda url: _FakeMap("sha_same"))
+        monkeypatch.setattr(freshness.graph, "available", lambda: True)
+        monkeypatch.setattr(freshness.graph, "indexed_sha", lambda url: "sha_same")
+
+        called = {"reindex": False}
+
+        def _no(url, sha):
+            called["reindex"] = True
+            return True
+
+        monkeypatch.setattr(freshness.graph, "ensure_indexed", _no)
+        monkeypatch.setattr(freshness.write_back, "reconcile_unmerged",
+                            lambda url, path, on_event=None: 0)
+        out = freshness.refresh_if_stale(REPO)
+        assert called["reindex"] is False  # watermark current → no reindex
+        assert out["action"] == "fresh"
+
+    def test_disabled_short_circuits(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(settings, "knowledge_dir", str(tmp_path))
+        monkeypatch.setattr(settings, "kb_auto_refresh", False)
+        assert freshness.refresh_if_stale(REPO) == {"action": "disabled"}
+
+
+class _FakeMap:
+    def __init__(self, sha):
+        self.sha = sha
+        self.files = {}
+
+    def symbol_count(self):
+        return 0
 
 
 class TestSymbolMapMultiLanguage:

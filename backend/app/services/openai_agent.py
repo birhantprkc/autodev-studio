@@ -11,11 +11,13 @@ targeted tests → iterate."""
 import json
 import re
 import time
+from pathlib import Path
 
 import httpx
 
 from ..config import settings
 from . import lang, providers
+from .knowledge import tools
 
 _PATH_RE = re.compile(r"[A-Za-z0-9_][\w./\-]*\.[A-Za-z0-9]+")
 
@@ -248,11 +250,12 @@ _CODE_SYSTEM = (
     "<<<END>>>\n\n"
     "To SEE a file you were not shown (next round will contain its content):\n"
     "<<<OPEN relative/path>>>\n\n"
-    "To SEARCH the repository for a symbol/flag/pattern (matching file:line results "
-    "arrive next round — use this to find the RIGHT file before editing, and to "
-    "check whether something already exists or how similar features are wired):\n"
-    "<<<GREP regex-pattern>>>\n\n"
+    + tools.PROTOCOL_BLOCK + "\n"
     "Rules:\n"
+    "- The localization hints you were given come from a PM working off summaries — "
+    "they are a HYPOTHESIS, not fact. If the shown files don't plausibly contain the "
+    "behavior, QUERY THE INDEX (SEARCH/LOOKUP/CALLERS) and edit where the code "
+    "actually lives. Say so in your SUMMARY when you conclude the hints were wrong.\n"
     "- SEARCH must match the shown file EXACTLY, including indentation. Keep each "
     "SEARCH block small and unique (2-8 lines); several small edits beat one huge one.\n"
     "- Implement the ticket COMPLETELY: a new function/flag must also be WIRED IN "
@@ -270,7 +273,6 @@ _EDIT_RE = re.compile(
 )
 _NEWFILE_RE = re.compile(r"<<<FILE\s+(.+?)\s*>>>\n(.*?)\n?<<<END>>>", re.DOTALL)
 _OPEN_RE = re.compile(r"<<<OPEN\s+(.+?)\s*>>>")
-_GREP_RE = re.compile(r"<<<GREP\s+(.+?)\s*>>>")
 _DONE_RE = re.compile(r"STATUS:\s*DONE", re.IGNORECASE)
 
 
@@ -278,22 +280,25 @@ def _clean_path(p: str) -> str:
     return p.strip().strip("`\"'")
 
 
-def _parse_edits(text: str) -> tuple[str, list[tuple[str, str, str]], list[tuple[str, str]], list[str], list[str], bool]:
-    """Parse the edit protocol → (summary, edits, new_files, opens, greps, done).
+def _parse_edits(text: str) -> tuple[str, list[tuple[str, str, str]], list[tuple[str, str]], list[str], list[tuple[str, str]], bool]:
+    """Parse the edit protocol → (summary, edits, new_files, opens, queries, done).
 
     edits are (path, search, replace); new_files are (path, content); opens are
-    file paths the model asked to see; greps are search patterns it asked to run;
-    done is the STATUS: DONE flag. Falls back to the legacy JSON
+    file paths the model asked to see; queries are (tool, argument) index
+    lookups it asked to run (search/lookup/callers/outline/grep); done is the
+    STATUS: DONE flag. Falls back to the legacy JSON
     `{files:[{path,content}]}` shape (real OpenAI handles that fine) so both
     providers keep working."""
     edits = [(_clean_path(p), s, r) for p, s, r in _EDIT_RE.findall(text)]
     # Strip matched EDIT spans so the FILE regex can't re-match their bodies.
     remainder = _EDIT_RE.sub("", text)
     new_files = [(_clean_path(p), c) for p, c in _NEWFILE_RE.findall(remainder)]
-    # OPEN/GREP requests only outside EDIT/FILE bodies (so file content can't fake one).
+    # OPEN/query requests only outside EDIT/FILE bodies (so file content can't fake one).
     outside = _NEWFILE_RE.sub("", remainder)
     opens = [_clean_path(p) for p in _OPEN_RE.findall(outside)]
-    greps = [g.strip() for g in _GREP_RE.findall(outside) if g.strip()]
+    # One parser for the request protocol, shared with the reviewing stages
+    # (services/knowledge/tools.py) — the tool list must not drift per surface.
+    queries = tools.parse_requests(outside)
     done = bool(_DONE_RE.search(outside))
     m = _SUMMARY_RE.search(text)
     summary = m.group(1).strip() if m else ""
@@ -303,7 +308,7 @@ def _parse_edits(text: str) -> tuple[str, list[tuple[str, str, str]], list[tuple
         summary = summary or data.get("summary", "")
         new_files = [(f.get("path"), f.get("content")) for f in (data.get("files") or [])
                      if isinstance(f, dict) and f.get("path") and isinstance(f.get("content"), str)]
-    return summary, edits, new_files, opens, greps, done
+    return summary, edits, new_files, opens, queries, done
 
 
 def _indent(line: str) -> int:
@@ -456,6 +461,9 @@ def code(cwd: str, task_key: str, title: str, description: str, criteria: list[s
     model = model or settings.dev_model
     provider = provider or settings.dev_provider
     file_chars = settings.dev_file_chars
+    # The code graph / embedding index is keyed by repo slug, which is exactly
+    # the working copy's directory name (git_ops.slug is idempotent on slugs).
+    repo = Path(cwd).name
     tree = git_ops.list_files(cwd, 300)
     tree_set = set(tree)
     # Localization first: use the files the PM already pinned (that exist in the
@@ -473,7 +481,9 @@ def code(cwd: str, task_key: str, title: str, description: str, criteria: list[s
     crit = "\n".join(f"- {c}" for c in criteria) or "- (use your judgment)"
     kb = f"\nRelevant repository knowledge:\n{context}\n" if context else ""
     symbols = ", ".join(target_symbols or [])
-    sym_block = f"Target symbols (edit/use these — from the PM's localization):\n{symbols}\n" if symbols else ""
+    sym_block = (f"Target symbols — the PM's localization HYPOTHESIS, not fact. Verify with "
+                 f"LOOKUP/SEARCH before trusting it; if the behavior lives elsewhere, edit "
+                 f"there instead and say so in your SUMMARY:\n{symbols}\n") if symbols else ""
     new_paths = [p for p in (affected_files or []) if p not in tree_set]
     new_block = f"Files to create (do not exist yet):\n{chr(10).join(new_paths)}\n" if new_paths else ""
     header = (
@@ -507,8 +517,9 @@ def code(cwd: str, task_key: str, title: str, description: str, criteria: list[s
     verification_broken = False  # last round's import check / tests failed
     feedback = ("Implement the ticket now with SEARCH/REPLACE edits (and new files if "
                 "needed). If the shown files don't contain the code you need — or you're "
-                "unsure the hints point to the right place — first emit GREP requests for "
-                "the relevant symbols/flags to find the right files. End with STATUS: "
+                "unsure the hints point to the right place — first query the repository "
+                "index (SEARCH for the mechanism, LOOKUP/CALLERS for a symbol, GREP for "
+                "raw text) and edit where the behavior ACTUALLY lives. End with STATUS: "
                 "CONTINUE — you'll verify against the applied diff before DONE.")
     max_rounds = max(2, settings.dev_max_rounds)
 
@@ -523,7 +534,7 @@ def code(cwd: str, task_key: str, title: str, description: str, criteria: list[s
         if last_err:
             break
         text = r.get("text", "")
-        rsum, edits, new_files, opens, greps, done = _parse_edits(text)
+        rsum, edits, new_files, opens, queries, done = _parse_edits(text)
         summary = rsum or summary
 
         # NEVER accept DONE while a verification is red or nothing's been written.
@@ -540,14 +551,16 @@ def code(cwd: str, task_key: str, title: str, description: str, criteria: list[s
                 continue
 
         results = _apply_round(cwd, edits, new_files, written, on_event)
-        # Run requested repo searches — the loop's localization tool.
-        for g in greps[:4]:
-            hits = git_ops.grep_lines(cwd, g)
-            results.append(f"GREP {g}:\n{hits[:2000]}")
+        # Answer the model's index queries — the loop's localization tools
+        # (services/knowledge/tools.py), the same ones the CLI backends get.
+        for tool, arg in queries[:4]:
+            out = tools.call(repo, cwd, tool, arg)
+            results.append(f"{tool.upper()} {arg}:\n{out}")
             if on_event:
-                on_event("info", f"⌕ grep {g} → {hits.splitlines()[0][:120] if hits else 'no matches'}")
-        if not edits and not new_files and not opens and not greps:
-            results.append("(you produced no edits, new files, OPEN or GREP requests)")
+                on_event("info", f"⌕ {tool} {arg[:60]} → "
+                                 f"{(out.splitlines() or ['(nothing)'])[0][:120]}")
+        if not edits and not new_files and not opens and not queries:
+            results.append("(you produced no edits, new files, OPEN or index queries)")
 
         # Make sure every file the model touched or asked for is loaded next round.
         for p in dict.fromkeys(opens + [p for p, _s, _r in edits] + written):

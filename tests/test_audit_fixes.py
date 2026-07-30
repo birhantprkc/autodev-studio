@@ -1,7 +1,7 @@
 """Regression tests for the professionalization audit fixes:
 
-  * TF-IDF retrieval fallback — the advertised `tfidf` embedding mode must
-    actually retrieve (it previously returned [] silently).
+  * Delivery-note retrieval — the in-process TF-IDF ranking over cross-run
+    notes must actually retrieve and rank (no vector store required).
   * providers.can_chat — LLM gates follow the per-stage provider registry,
     not one hardcoded openai_api_key.
   * Ticket key allocation survives ticket deletion without key collisions.
@@ -20,47 +20,40 @@ from app.services.knowledge import retriever, store
 from app.services.knowledge.facts import KnowledgeDocument
 
 
-# --- TF-IDF retrieval fallback ------------------------------------------------
+# --- delivery-note retrieval (in-process TF-IDF, no vector store) -------------
 @pytest.fixture
 def kb_repo(tmp_path, monkeypatch):
-    """A fake repo with three stored knowledge docs in a temp knowledge dir."""
+    """A fake repo with three stored delivery notes in a temp knowledge dir."""
     monkeypatch.setattr(settings, "knowledge_dir", str(tmp_path))
     url = "https://github.com/acme/widgets"
-    store.save_all(url, [
-        KnowledgeDocument(id="repository", type="repository", name="widgets",
-                          summary="A CLI for reticulating splines."),
-        KnowledgeDocument(id="mod_auth", type="module", name="auth",
-                          summary="Login sessions and password hashing.",
+    for doc in [
+        KnowledgeDocument(id="delivery_login", type="delivery_note", name="Delivered: login",
+                          summary="Added password login sessions and hashing.",
                           content={"files": ["auth/session.py"]}),
-        KnowledgeDocument(id="feat_export", type="feature", name="CSV export",
+        KnowledgeDocument(id="delivery_export", type="delivery_note", name="Delivered: CSV export",
                           summary="Exports spline reports as CSV files.",
                           content={"files": ["export/csv.py"]}),
-    ])
+        KnowledgeDocument(id="lessons_auth", type="lesson", name="Lessons: auth",
+                          summary="Durable auth lessons.",
+                          content={"lessons": ["sessions expire in 1h"]}),
+    ]:
+        store.save(url, doc)
     return url
 
 
-class TestTfidfFallback:
-    def test_retrieves_and_ranks_without_semantic_stack(self, kb_repo, monkeypatch):
-        from app.services import local_rag
-
-        monkeypatch.setattr(local_rag, "semantic_available", lambda: False)
-        hits = retriever.retrieve(kb_repo, "csv export report")
-        assert hits, "tfidf mode must retrieve, not silently return []"
-        assert hits[0][0].id == "feat_export"
+class TestNoteRetrieval:
+    def test_retrieves_and_ranks_notes(self, kb_repo):
+        hits = retriever.notes(kb_repo, "csv export report")
+        assert hits, "note ranking must retrieve, not silently return []"
+        assert hits[0][0].id == "delivery_export"
         assert all(score > 0 for _doc, score in hits)
 
-    def test_scope_context_works_in_tfidf_mode(self, kb_repo, monkeypatch):
-        from app.services import local_rag
-
-        monkeypatch.setattr(local_rag, "semantic_available", lambda: False)
+    def test_scope_context_surfaces_relevant_note(self, kb_repo):
         ctx = retriever.scope_context(kb_repo, "password login sessions")
-        assert "auth" in ctx
+        assert "login" in ctx.lower()
 
-    def test_unrelated_query_returns_nothing(self, kb_repo, monkeypatch):
-        from app.services import local_rag
-
-        monkeypatch.setattr(local_rag, "semantic_available", lambda: False)
-        assert retriever.retrieve(kb_repo, "zzzq qqzz xyzzy") == []
+    def test_unrelated_query_returns_nothing(self, kb_repo):
+        assert retriever.notes(kb_repo, "zzzq qqzz xyzzy") == []
 
 
 # --- providers.can_chat -------------------------------------------------------
@@ -89,7 +82,7 @@ class TestCanChat:
 # --- Ticket key allocation ----------------------------------------------------
 class TestNextKey:
     def test_no_collision_after_deletion(self, db):
-        from app.routers.sessions import _next_key
+        from app.core.scoping import next_key as _next_key
 
         repo = Repo(name="w", org="acme", git_url="https://github.com/acme/w",
                     key_prefix="W")
@@ -106,7 +99,7 @@ class TestNextKey:
         assert _next_key(db, repo) == "W-104"
 
     def test_first_key(self, db):
-        from app.routers.sessions import _next_key
+        from app.core.scoping import next_key as _next_key
 
         repo = Repo(name="w2", org="acme", git_url="https://github.com/acme/w2",
                     key_prefix="W2")

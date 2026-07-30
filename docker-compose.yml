@@ -1,4 +1,4 @@
-# AutoDev Studio — single self-contained service.
+# CodeJury — single self-contained service.
 #   docker compose up --build   →   http://localhost:8017
 #
 # The admin password is generated on first boot and printed to the log; read it
@@ -14,16 +14,18 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       RAG_BACKEND: local
-      RAG_EMBEDDINGS: tfidf
       DEMO_MODE: "true"           # dry-run PRs; set false only for a repo you own
       SEED_ON_STARTUP: "false"
+      # The code-graph engine caches per-repo graphs here; keep them on a volume
+      # so repos stay indexed across restarts.
+      XDG_CACHE_HOME: /data/cache
       # Keep the SQLite DB on the mounted volume (see below), not the image.
-      DATABASE_URL: sqlite:////data/sdlc_agents.db
+      DATABASE_URL: sqlite:////data/codejury.db
     volumes:
-      # Persist the SQLite DB and cloned working copies across restarts.
-      - autodev-data:/data
-      - autodev-workspace:/workspace
+      # Persist the SQLite DB, cloned working copies, and code-graph cache.
+      - codejury-data:/data
+      - codejury-workspace:/workspace
 
 volumes:
-  autodev-data:
-  autodev-workspace:
+  codejury-data:
+  codejury-workspace:

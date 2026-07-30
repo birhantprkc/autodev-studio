@@ -1,5 +1,5 @@
 /* ==========================================================================
-   AutoDev Studio — design system
+   CodeJury — design system
    Self-contained (no CDN). Dark is the default theme; [data-theme="light"]
    on <html> flips it. Components are plain classes, composed in templates
    and app.js.
@@ -616,6 +616,11 @@ code { font-family: var(--font-mono); font-size: 0.92em; background: var(--surfa
   padding: 30px 30px 26px;
 }
 .login-card .brand { padding: 0 0 18px; }
+/* The sign-in card carries the full lockup, so its tile is bigger than the
+   sidebar badge and the glyph is drawn edge to edge rather than inset. */
+.login-card .brand .mark { width: 46px; height: 46px; border-radius: 12px; }
+.login-card .brand .name { font-size: 17px; }
+.login-card .brand .tag { font-size: 11.5px; margin-top: -1px; }
 
 /* --- Settings ------------------------------------------------------------------------ */
 .settings-grid { max-width: 720px; display: flex; flex-direction: column; gap: 14px; }
@@ -668,6 +673,87 @@ code { font-family: var(--font-mono); font-size: 0.92em; background: var(--surfa
 .prov-adv summary::before { content: "▸ "; }
 .prov-adv[open] summary::before { content: "▾ "; }
 .prov-adv[open] { padding-bottom: 2px; }
+
+/* Jury tab: one card per seated judge. The card reads top-to-bottom as
+   "who / what perspective / on which model", which is the order an operator
+   thinks about a panel seat in. */
+.judge-card { padding: 13px 15px; display: flex; flex-direction: column; gap: 10px; margin-bottom: 10px; }
+.judge-card.judge-off { opacity: 0.55; }
+.judge-card .judge-head { gap: 8px; align-items: center; }
+.judge-card .judge-name {
+  flex: 1; min-width: 0;
+  font-weight: 650; font-size: 13px;
+  background: none; border: 1px solid transparent; padding: 4px 6px;
+}
+.judge-card .judge-name:hover:not(:disabled) { border-color: var(--border); }
+.judge-card .judge-name:focus { background: var(--surface-2); border-color: var(--accent); }
+.judge-card .judge-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+.judge-card .judge-grid select, .judge-card .judge-grid input { width: 100%; min-width: 0; }
+.judge-card .judge-summary { line-height: 1.45; }
+.judge-card .prov-adv { margin-top: 0; }
+.judge-card .prov-adv textarea { width: 100%; margin-top: 7px; resize: vertical; line-height: 1.5; }
+.jury-bar { margin-bottom: 8px; }
+@media (max-width: 900px) { .judge-card .judge-grid { grid-template-columns: 1fr; } }
+
+/* Modal form body (confirmDialog with a bodyNode) */
+.modal .modal-body:empty { display: none; }
+.modal .modal-body { margin-top: 12px; }
+.modal .modal-body textarea, .modal .modal-body input, .modal .modal-body select { width: 100%; }
+
+/* Jury verdict, rendered in the ticket drawer / review screen.
+   Reading order: the decision, then the evidence behind it — the foreperson's
+   call, the findings it acted on, then every judge's own review verbatim. */
+.jv-card { display: flex; flex-direction: column; }
+.jv-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; }
+.jv-rationale {
+  font-size: 12.5px; color: var(--text-muted); line-height: 1.55;
+  margin-top: 10px; padding: 9px 11px;
+  background: var(--surface-2); border-radius: var(--radius-sm);
+}
+.jv-sec-head {
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--text-muted);
+  margin: 18px 0 6px; padding-bottom: 6px; border-bottom: 1px solid var(--border);
+}
+.jv-sec-hint { text-transform: none; letter-spacing: 0; font-weight: 400; }
+
+.jv-finding { border-left: 2px solid var(--border); padding: 2px 0 2px 10px; margin: 9px 0; }
+.jv-finding.jv-block { border-left-color: var(--danger); }
+.jv-finding.jv-obs { border-left-color: var(--warn); }
+.jv-finding.jv-dropped { border-left-color: var(--border); opacity: 0.7; }
+.jv-finding.jv-own { border-left-color: var(--accent); }
+.jv-finding .jv-title { font-size: 12.5px; font-weight: 600; line-height: 1.45; }
+.jv-finding .jv-meta { font-size: 11px; color: var(--text-faint); margin-top: 3px; }
+.jv-finding .jv-body { font-size: 12px; color: var(--text-muted); line-height: 1.5; margin-top: 5px; }
+.jv-evidence {
+  font-family: var(--mono, ui-monospace, monospace); font-size: 11px;
+  color: var(--text-muted); background: var(--surface-2);
+  border-radius: var(--radius-sm); padding: 7px 9px; margin: 6px 0 0;
+  white-space: pre-wrap; overflow-x: auto; max-height: 190px;
+}
+
+/* One collapsible card per judge */
+.jv-juror-card {
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  margin: 8px 0; padding: 9px 11px;
+}
+.jv-juror-card.jv-abstain { border-style: dashed; opacity: 0.75; }
+.jv-juror-card > summary {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  cursor: pointer; list-style: none;
+}
+.jv-juror-card > summary::-webkit-details-marker { display: none; }
+.jv-juror-card > summary::before { content: "▸"; color: var(--text-faint); font-size: 10px; }
+.jv-juror-card[open] > summary::before { content: "▾"; }
+.jv-juror-card .jv-j-name { font-size: 12.5px; font-weight: 650; }
+.jv-juror-card .jv-j-model { flex-shrink: 0; }
+.jv-juror-card .jv-j-body { margin-top: 8px; }
+.jv-j-summary { font-size: 12px; color: var(--text-muted); line-height: 1.55; }
+.jv-j-error { font-size: 12px; color: var(--warn); line-height: 1.5; }
+.badge.jv-v-ok { color: var(--ok); border-color: var(--ok); }
+.badge.jv-v-bad { color: var(--danger); border-color: var(--danger); }
+.badge.jv-v-abstain { color: var(--text-faint); }
 
 /* Agent color coding (consistent across screens) */
 .ag-pm { color: var(--purple); } .ag-dev { color: var(--accent-strong); }

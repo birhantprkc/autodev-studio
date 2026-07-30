@@ -12,6 +12,7 @@
     plus: '<path d="M12 5v14M5 12h14"/>',
     send: '<path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4 20-7z"/>',
     chevronDown: '<path d="m6 9 6 6 6-6"/>',
+    chevronUp: '<path d="m18 15-6-6-6 6"/>',
     chevronRight: '<path d="m9 18 6-6-6-6"/>',
     check: '<path d="M20 6 9 17l-5-5"/>',
     checkCircle: '<circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.5 2.5 4.8-5"/>',
@@ -45,10 +46,22 @@
     folder: '<path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8L9.6 3.7A2 2 0 0 0 8 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z"/>',
     info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><circle cx="12" cy="8" r="0.6" fill="currentColor" stroke="none"/>',
     dollar: '<path d="M12 2v20"/><path d="M17 5.5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>',
+    // The CodeJury app badge: the balance scale alone, filling the tile.
+    // The full logo (static/logo.svg) is braces around the scale with </> on
+    // the beam, but scaled into a 28px badge all three collapse into an
+    // unreadable smudge — rendered side by side, only the bare scale survives
+    // the size. The braces stay on the wide lockup, where there's room.
+    codejury: '<path d="M12 3.4v17.2"/><path d="M8 20.6h8"/>'
+      + '<path d="M4 7.4h4c2 0 3-.6 4-1 1 .4 2 1 4 1h4"/>'
+      + '<path d="m4 7.4-2.4 5.2h4.8z"/><path d="m20 7.4-2.4 5.2h4.8z"/>',
+    // Jury / ensemble review, inline at text size.
+    scales: '<path d="M12 3v18"/><path d="M8 21h8"/><path d="M4 7h4c2 0 3-.6 4-1 1 .4 2 1 4 1h4"/>'
+      + '<path d="m4 7-2.5 5.5h5z"/><path d="m20 7-2.5 5.5h5z"/>',
   };
 
   window.icon = function (name, size = 16) {
     const path = P[name] || P.info;
     return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${path}</svg>`;
   };
+
 })();

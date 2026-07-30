@@ -10,7 +10,9 @@ previous runs already proved.
 Factual fields (files touched, symbols added, verdicts) are computed from the
 git diff — deterministic, can't hallucinate. Only the short prose (summary,
 gotchas, wiring notes) uses one cheap knowledge_model call, with a
-deterministic fallback when no LLM is available. Never raises.
+deterministic fallback when no LLM is available. Notes live in the JSON store
+and are ranked in-process at query time (retriever.notes) — no vector index
+to maintain. Never raises.
 """
 
 from __future__ import annotations
@@ -22,7 +24,7 @@ from datetime import UTC, datetime
 
 from ...config import settings
 from .. import git_ops, llm, providers
-from . import facts_view, indexer, store
+from . import facts_view, store
 from .facts import KnowledgeDocument
 
 logger = logging.getLogger(__name__)
@@ -146,10 +148,9 @@ def _record(repo_url: str, key: str, title: str, path: str, branch: str,
         confidence="HIGH" if merged else "LOW",
     )
     store.save(repo_url, doc)
-    indexed = indexer.upsert(repo_url, [doc])
     _prune(repo_url)
     msg = (f"KB write-back: delivery note stored ({len(files)} files, "
-           f"{len(symbols)} new symbols{', indexed' if indexed else ''})")
+           f"{len(symbols)} new symbols)")
     logger.info("knowledge.write_back: %s — %s", key, msg)
     if on_event:
         try:
@@ -197,7 +198,6 @@ def _prune(repo_url: str) -> None:
         except Exception:  # noqa: BLE001 — consolidation must never block pruning
             logger.exception("knowledge.write_back: consolidation failed for %s", repo_url)
     for doc in retired:
-        indexer.delete(repo_url, [doc])
         store.remove(repo_url, doc.id)
 
 
@@ -247,7 +247,6 @@ def _consolidate(repo_url: str, retiring: list[KnowledgeDocument]) -> None:
             confidence="MEDIUM",
         )
         store.save(repo_url, doc)
-        indexer.upsert(repo_url, [doc])
         logger.info("knowledge.write_back: consolidated %d retiring note item(s) into %s",
                     len(items), doc_id)
 
@@ -299,7 +298,6 @@ def reconcile_unmerged(repo_url: str, path: str, on_event=None) -> int:
             doc.content["merged"] = True
             doc.confidence = "HIGH"
             store.save(repo_url, doc)
-            indexer.upsert(repo_url, [doc])
             upgraded += 1
             msg = f"KB: delivery note '{doc.id}' merged into default branch — upgraded to trusted knowledge"
             logger.info("knowledge.write_back: %s", msg)

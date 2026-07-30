@@ -1,4 +1,4 @@
-# Does a one-time knowledge base make AI coding cheaper? AutoDev Studio vs plain Claude Code
+# Does a one-time knowledge base make AI coding cheaper? CodeJury vs plain Claude Code
 
 ## Current pipeline vs plain Claude Code
 
@@ -77,7 +77,7 @@ Two systems were given the **identical, non-technical request text** (no file na
 internals — the way a PM or user would actually phrase it; see `data/task_a.txt` /
 `data/task_b.txt`):
 
-| | AutoDev Studio (KB pipeline) | Plain Claude Code (baseline) |
+| | CodeJury (KB pipeline) | Plain Claude Code (baseline) |
 |---|---|---|
 | Repo knowledge | One-time structured KB: 62 LLM-written views (architecture, modules, features, workflows, entrypoints, domain, rules, integrations) + free AST symbol map, embedded for retrieval | None — fresh clone, agent explores with its own tools |
 | Flow | PM scope-lock → tickets → human approve → Dev → QA → Review → PR branch | One `claude -p` run that edits the working tree |
@@ -174,7 +174,7 @@ Claude comparison, and it uses a **larger repo** to test the core hypothesis —
 exploration (and therefore the baseline's cost) grows with codebase size while KB retrieval does
 not.
 
-| | AutoDev Studio (KB pipeline) | Plain Claude Code (baseline) |
+| | CodeJury (KB pipeline) | Plain Claude Code (baseline) |
 |---|---|---|
 | Flow | PM → tickets → approve → Dev → QA → Review → PR branch | One `claude -p` run on a fresh clone |
 | PM / Dev | claude-cli **sonnet** | — |
@@ -356,7 +356,7 @@ write access to Textualize/rich — no LLM cost, irrelevant to the comparison.
 
 The first pipeline runs of A and C each burned **two extra `sonnet` Dev rounds** — not because the
 code was wrong, but because QA hard-failed on a broken test environment, and the reviewer dutifully
-bounced the (correct) diff. Two independent causes, both real AutoDev bugs, both fixed before the
+bounced the (correct) diff. Two independent causes, both real CodeJury bugs, both fixed before the
 numbers above were taken:
 
 1. **Poetry / PEP-735 dev-dependencies were never installed.** `git_ops.test_python()` built the
@@ -710,7 +710,7 @@ not a finished delivery.
 
 ## Reproducing
 
-1. Ingest a repo in AutoDev Studio with the knowledge stage on `claude-cli` (Settings →
+1. Ingest a repo in CodeJury with the knowledge stage on `claude-cli` (Settings →
    Knowledge provider). The one-time build cost is recorded on the repo row (`kb_cost_usd`).
 2. Run a scope through PM → tickets → approve → run; per-stage costs land in `agentrun`
    (`/costs` in the UI), PM scoping cost on the session.

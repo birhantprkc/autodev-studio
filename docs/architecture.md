@@ -1,6 +1,6 @@
 # Architecture
 
-AutoDev Studio is a control plane for an autonomous software-development pipeline.
+CodeJury is a control plane for an autonomous software-development pipeline.
 A human describes a feature in plain English; a chain of specialized agents scopes
 it, writes the code on an isolated branch of a cloned repo, tests it, reviews it,
 and (optionally) opens a real pull request — each agent grounded in a retrieval
@@ -16,10 +16,12 @@ graph TB
 
     subgraph App["FastAPI app (:8017)"]
         Routers["Routers: auth · settings · repos · sessions · tasks · agents · costs · overview"]
-        Orch["orchestrator — Dev → QA → Review → PR + revise loop"]
+        Orch["orchestrator — Dev → QA → Jury → PR + revise loop"]
+        Jury["jury/ — N specialized judges in parallel + foreperson synthesis"]
         BG["background — in-process thread pool"]
         KB["knowledge/ + local_rag — analyze · index · retrieve"]
         Agents["pm_agent · claude_agent · openai_agent"]
+        Roster["judges — the panel roster (add/drop/re-model)"]
         Git["git_ops — clone / branch / diff / PR"]
         DB[("SQLite (SQLModel)")]
     end
@@ -30,7 +32,10 @@ graph TB
 
     UI --> Routers --> DB
     Routers --> BG --> Orch
-    Orch --> Agents & Git & KB
+    Orch --> Agents & Git & KB & Jury
+    Jury --> Roster
+    Jury --> Providers
+    Routers --> Roster
     Agents --> Providers
     Git --> GH
     Routers --> Jira
@@ -43,14 +48,58 @@ CDN dependency — it runs fully offline.
 ## The pipeline
 
 ```
-ingest repo → build knowledge base (structured views + RAG index)
+ingest repo → build knowledge base (code graph + semantic index)
   → PM agent clarifies the request + drafts tickets → human approval (+ optional Jira)
-  → Dev agent writes code on an agent/<key> branch of a cloned working copy
-  → QA agent runs tests + reviews          ┐
-  → Review agent checks the diff vs criteria ├─ revise loop ×N on failure
+  → Planner reads the repo and decides HOW: ordered steps, verified file:line pins,
+    blast radius, tests to extend
+  → Dev agent implements the plan on an agent/<key> branch of a cloned working copy
+  → QA agent runs tests + reviews                    ┐
+  → Jury: N specialized judges review independently   ├─ revise loop ×N on failure
+  → Foreperson merges their opinions into one verdict │
   → PR stage pushes + opens a real PR        ┘
   → human merges
 ```
+
+### Why a separate Planner
+
+The PM talks to a human; the Planner talks to the repository. Keeping them apart
+is the single biggest structural decision here, and it follows the measurement in
+the literature: removing the planner from a multi-agent pipeline drops it to
+single-agent performance (AgentForge), and specialized planning/navigation roles
+beat one all-purpose agent (HyperAgent).
+
+Concretely, the PM works from summaries and never opens the code, so its guesses
+about *which file* were wrong often enough to matter — one live run pinned
+`Table.__rich__` to `rich/json.py` and sent the Dev agent at three files it had
+no business editing. The PM now owns the requirement and the acceptance criteria
+and nothing else. The Planner runs at pipeline entry, when the working copy is
+clean and the code graph is current, queries the index directly, and emits a plan
+whose every symbol is then **deterministically verified** against the graph, the
+symbol map and ripgrep. A symbol that resolves nowhere is marked as new rather
+than silently pointed at whatever matched first.
+
+Its output replaces the ticket's localization, and is read by Dev (as the
+approach), by QA and the jury (as what the diff is supposed to be doing), and by
+the human (in the task drawer).
+
+### Retrieval: one pipeline, called by every agent
+
+`knowledge/retriever.retrieve_context` is five stages, each independently
+switchable so their contribution is measurable rather than assumed
+(see `benchmarks/retrieval-ablation.md`):
+
+| # | Stage | What it adds |
+|---|---|---|
+| 1 | **fuse** | BM25 over graph nodes + local dense embeddings, weighted RRF |
+| 2 | **expand** | each top hit's 1-hop neighbourhood — callers, callees, class members, covering tests |
+| 3 | **refine** | ripgrep over the query's identifiers: strings, comments, config, templates the AST index cannot model |
+| 4 | **rerank** | one order out of four incomparable score scales |
+| 5 | **snippets** | the winners' real source, or a cached summary when a node is too large to inline |
+
+The same stages back the callable tools (`search`, `lookup`, `callers`, `expand`,
+`outline`, `snippet`, `grep`) that the Planner, the Dev agent, QA and every juror
+reach through — one dispatcher, four surfaces, no tool exclusive to one vendor's
+agent.
 
 ### Sequence of a pipeline run
 
@@ -100,10 +149,13 @@ lets a run survive a client disconnect.
 
 | Agent | Default role | Prompt source |
 |---|---|---|
-| **PM** | Clarify the request in a Socratic loop, then draft grounded tickets | `pm_agent` |
-| **Dev** | Implement the ticket in a cloned working copy | `prompts.dev` / `prompts.revise` |
+| **PM** | Clarify the request in a Socratic loop, then draft approvable tickets | `pm_agent` |
+| **Planner** | Decide how the change is made; verify every pin against the graph | `planner` |
+| **Dev** | Implement the plan in a cloned working copy | `prompts.dev` / `prompts.revise` |
 | **QA** | Run tests and review the diff skeptically | `prompts.QA_SYSTEM` / `qa_user` |
-| **Review** | Review the diff against the acceptance criteria | `prompts.review` / `REVIEW_SYSTEM` |
+| **Jury** | A panel of specialized judges reviews the diff independently, in parallel, each on its own model | `jury/personas.py` + `jury/prompts.py` |
+| **Foreperson** | Merge the judges' opinions, resolve conflicts, drop guesses, decide | `jury/synthesis.py` |
+| **Review** (jury off) | Single-reviewer fallback: review the diff against the acceptance criteria | `prompts.review` / `REVIEW_SYSTEM` |
 | **PR** | Push the branch and open the PR (the `gh` CLI, not an LLM) | `prompts.pr_body` |
 
 Each stage's provider and model are configurable independently — see
