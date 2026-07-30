@@ -33,19 +33,20 @@ COLUMN_TITLES = {
     "in_dev": "In Dev",
     "qa": "QA",
     "review": "Review",
+    "blocked": "Blocked",
     "pr": "PR",
     "done": "Done",
 }
 
 # Board lanes, left→right. "approved" is a virtual lane (not a TaskStatus): it
 # holds human-approved tickets that haven't started yet.
-BOARD_LANES = ["backlog", "scoped", "approved", "in_dev", "qa", "review", "pr", "done"]
+BOARD_LANES = ["backlog", "scoped", "approved", "in_dev", "qa", "review", "blocked", "pr", "done"]
 
-# The 7 board columns collapsed into 4 JIRA-style lanes.
+# The board columns collapsed into 4 JIRA-style lanes.
 PIPELINE_MAP = [
     ("todo", "To Do", ["backlog", "scoped"]),
     ("in_progress", "In Progress", ["in_dev"]),
-    ("review", "Review", ["qa", "review", "pr"]),
+    ("review", "Review", ["qa", "review", "blocked", "pr"]),
     ("done", "Done", ["done"]),
 ]
 
@@ -161,6 +162,12 @@ def pipeline(db: Session, repo_id: int | None = None) -> dict:
 
 def update(db: Session, task_id: int, values: dict) -> Task:
     task = require(db, task_id)
+    # Status is advanced by the pipeline gates, never by a generic PATCH.
+    # Otherwise a caller could set `pr` or `done` without QA, review, or merge
+    # validation and make it look like a genuine delivery.
+    if "status" in values and values["status"] != task.status:
+        raise conflict("Task status is pipeline-controlled; use the approval, "
+                       "run, review, or delivery action instead.")
     for field, value in values.items():
         setattr(task, field, value)
     task.updated_at = utcnow()
@@ -313,9 +320,27 @@ def review(db: Session, task_id: int, diff_lines: int = 400) -> dict:
         "coverage": coverage,
         "jury": jury,
         "ready_for_deployment": (
-            task.status in ("pr", "done") and "FAIL" not in qa.upper()
-            and jury.get("verdict", "APPROVED") == "APPROVED"),
+            task.status in ("pr", "done") and _qa_approved(qa)
+            and _review_approved(review_text, jury)),
     }
+
+
+def _qa_approved(text: str) -> bool:
+    """Require an explicit successful QA outcome; empty/inconclusive is not pass."""
+    upper = (text or "").upper()
+    return bool(re.search(r"VERDICT\s*:\s*(?:PASS|APPROVED)\b", upper)) \
+        and "INCONCLUSIVE" not in upper
+
+
+def _review_approved(text: str, jury: dict | None = None) -> bool:
+    """Require an explicit approval from either review mode or the deterministic gate."""
+    verdict = (jury or {}).get("verdict")
+    if verdict:
+        return verdict == "APPROVED" and not (jury or {}).get("unresolved_blocking")
+    upper = (text or "").upper()
+    return ("FAST PATH:" in upper or
+            bool(re.search(r"VERDICT\s*:\s*APPROVED\b", upper))) \
+        and "INCONCLUSIVE" not in upper
 
 
 def create_pr(db: Session, task_id: int, user: User) -> dict:
@@ -426,6 +451,16 @@ def merge(db: Session, task_id: int) -> dict:
     sibling subtask done together — they share the same branch and PR."""
     task = require(db, task_id)
     siblings = scope_siblings(db, task)
+    if all(t.status == "done" for t in siblings):
+        return {"ok": True, "tasks": [t.key for t in siblings]}
+    if any(t.status != "pr" for t in siblings):
+        raise conflict("The whole scope must reach the PR lane before it can be merged.")
+    if not settings.demo_mode and any(not t.pr_url for t in siblings):
+        raise conflict("A real pull request must exist before the delivery can be merged.")
+    if any(not _qa_approved(t.qa_summary or "") for t in siblings) or any(
+            not _review_approved(t.review_summary or "", t.review_findings or {})
+            for t in siblings):
+        raise conflict("QA and code review must explicitly approve this delivery before merge.")
     now = utcnow()
     for t in siblings:
         t.status = "done"

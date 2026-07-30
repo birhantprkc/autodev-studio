@@ -38,7 +38,7 @@ class CreateTasksResponse(BaseModel):
 
 class UpdateTaskRequest(BaseModel):
     status: Literal[
-        "backlog", "scoped", "in_dev", "qa", "review", "pr", "done"
+        "backlog", "scoped", "in_dev", "qa", "review", "blocked", "pr", "done"
     ] | None = None
     priority: Literal["low", "medium", "high"] | None = None
     title: str | None = None

@@ -1904,8 +1904,8 @@ function buildSearchTestRow() {
   return buildProbeRow({
     id: "search-test", label: "Test code search",
     help: "Reports which lexical engine is answering (save first): ripgrep, or the git grep "
-        + "fallback. The fallback works, but sees only tracked files and can't filter by "
-        + "language — so localization is measurably coarser.",
+        + "fallback. The fallback sees only tracked files and has no .gitignore-aware "
+        + "walk; definition searches still filter by language.",
     probe: () => API.testSearch(),
     okText: "Code search OK", failText: "Code search unavailable",
   });

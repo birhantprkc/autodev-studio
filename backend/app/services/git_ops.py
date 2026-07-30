@@ -163,7 +163,7 @@ def slug(repo_url: str) -> str:
 
 
 def workdir(repo_url: str) -> Path:
-    base = Path(settings.repos_dir).resolve()
+    base = Path(settings.repos_dir).expanduser().resolve()
     base.mkdir(parents=True, exist_ok=True)
     return base / slug(repo_url)
 

@@ -67,8 +67,9 @@ def probe() -> dict:
                   if not settings.ripgrep_enabled else
                   f"ripgrep binary '{settings.ripgrep_path}' not found on PATH")
         return {"ok": True, "output":
-                f"{reason}.\nFalling back to `git grep` — searches still work, but only "
-                "over tracked files, without type filters or .gitignore awareness. "
+                f"{reason}.\nFalling back to `git grep` — searches still work over "
+                "tracked files; definition searches retain type filters, but the "
+                "fallback has no .gitignore-aware walk. "
                 "Install ripgrep (`apt install ripgrep`, `brew install ripgrep`, "
                 "`cargo install ripgrep`) for the full engine."}
     try:
@@ -218,7 +219,7 @@ def files(root: str, pattern: str, *, pathspec: str = ".", max_files: int = 5,
     exe = binary()
     if exe is None:
         flags = "-l" + ("i" if ignore_case else "") + ("F" if fixed else "E")
-        return _git_grep(root, flags, pattern, pathspec)[:max_files]
+        return _git_grep(root, flags, pattern, pathspec, types=types)[:max_files]
     args = _base_args(exe, ignore_case=ignore_case, fixed=fixed,
                       globs=_globs(pathspec), types=types or [])
     args += ["--files-with-matches", "--null", "--", pattern]
@@ -295,8 +296,11 @@ def definitions(root: str, name: str, *, max_files: int = 3,
         if entry is None:
             continue
         pattern, types = entry
+        # Types are passed to BOTH engines: ripgrep filters with --type, the
+        # fallback with equivalent pathspecs. Handing them only to ripgrep is
+        # what let the C pattern match Python files on a box without it.
         for f in files(root, pattern.format(n=esc), max_files=max_files,
-                       types=list(types) if available() else None):
+                       types=list(types)):
             if f not in found:
                 found.append(f)
         if len(found) >= max_files:
@@ -310,26 +314,156 @@ def definitions(root: str, name: str, *, max_files: int = 3,
 
 # --- Fallback engine: git grep ------------------------------------------------
 
-def _git_grep(root: str, flags: str, pattern: str, pathspec: str) -> list[str]:
+# ripgrep --type name → the globs git needs to mean the same thing. Only the
+# types the definition patterns actually ask for; an unmapped type simply doesn't
+# narrow the search, which is the safe direction.
+_TYPE_GLOBS: dict[str, tuple[str, ...]] = {
+    "py": ("*.py", "*.pyi"),
+    "js": ("*.js", "*.jsx", "*.mjs", "*.cjs"),
+    "ts": ("*.ts", "*.tsx", "*.mts", "*.cts"),
+    "go": ("*.go",),
+    "rust": ("*.rs",),
+    "java": ("*.java",),
+    "ruby": ("*.rb", "*.rake", "Rakefile", "Gemfile"),
+    "php": ("*.php", "*.phtml"),
+    "c": ("*.c", "*.h"),
+    "cpp": ("*.cc", "*.cpp", "*.cxx", "*.hpp", "*.hh", "*.hxx"),
+    "csharp": ("*.cs",),
+}
+
+
+def _type_pathspecs(types: list[str] | None) -> list[str]:
+    """git pathspecs equivalent to a set of ripgrep `--type` names."""
+    globs: list[str] = []
+    for t in types or []:
+        for glob in _TYPE_GLOBS.get(t, ()):
+            if glob not in globs:
+                globs.append(f"*/{glob}" if not glob.startswith("*") else glob)
+                globs.append(glob)
+    # git matches a bare '*.py' against the full path, so both the plain and the
+    # */-prefixed form are needed to catch top-level and nested files alike.
+    return list(dict.fromkeys(globs))
+
+
+def _git_grep(root: str, flags: str, pattern: str, pathspec: str,
+              *, types: list[str] | None = None) -> list[str]:
     """The pre-ripgrep engine, kept as the degraded tier.
 
-    Only tracked files, no type filters, no .gitignore semantics — but it is
-    present wherever git is, which is everywhere this pipeline runs.
+    Only tracked files and no .gitignore semantics — but it is present wherever
+    git is, which is everywhere this pipeline runs. Language narrowing *is*
+    honoured, via pathspecs: without it the C pattern is applied to Python files
+    and `definitions()` answers with whatever over-matches, so the two tiers
+    would disagree on the one call the Planner pins work to.
     """
-    args = ["git", "grep", flags, _to_ere(pattern), "--", pathspec or "."]
+    # git cannot intersect two pathspecs, so an explicit one from the caller wins
+    # over the language narrowing. No caller supplies both today.
+    explicit = pathspec not in ("", ".")
+    limits = [pathspec] if explicit else (_type_pathspecs(types) or ["."])
+
+    if "F" not in flags and _supports_pcre(root):
+        # Preferred: PCRE understands the same syntax ripgrep does, so the two
+        # tiers agree exactly rather than approximately.
+        args = ["git", "grep", flags.replace("E", "P"), pattern, "--", *limits]
+        out = _run(args, root)
+        if out.strip():
+            return [l for l in out.splitlines() if l.strip()]
+        # An empty result is ambiguous — genuinely no matches, or a pattern this
+        # build choked on. Falling through to ERE costs one extra process on a
+        # miss and removes the ambiguity.
+    args = ["git", "grep", flags, _to_ere(pattern), "--", *limits]
     out = _run(args, root)
     return [l for l in out.splitlines() if l.strip()]
 
 
-def _to_ere(pattern: str) -> str:
-    """Make a ripgrep (Rust regex) pattern survive `git grep -E`, which is
-    POSIX ERE plus GNU extensions.
+_pcre_support: bool | None = None
 
-    `\\b`, `\\s` and `\\w` are GNU extensions git honours; non-capturing groups
-    are not, and `git grep -E '(?:def|class)'` matches the literal text `?:` —
-    it returns zero hits instead of erroring, so this failure is silent. The
-    definition patterns are all group-shaped, which is exactly how `definitions()`
-    silently returned nothing on a box without ripgrep. Nothing here reads the
-    capture groups, so downgrading them is lossless.
+
+def _supports_pcre(root: str) -> bool:
+    """Whether this git was built with PCRE (``git grep -P``).
+
+    Probed once per process — the answer is a property of the git binary, not of
+    the repository — inside a real repo, because ``git grep`` needs one. Builds
+    without PCRE say so on stderr and are the *good* case: they fail loudly. The
+    ERE tier below is the one that fails quietly, which is why it is second.
     """
-    return pattern.replace("(?:", "(")
+    global _pcre_support
+    if _pcre_support is None:
+        proc = subprocess.run(["git", "grep", "-qP", r"\d", "--", "."], cwd=root,
+                              capture_output=True, text=True, errors="replace",
+                              timeout=_TIMEOUT, check=False)
+        _pcre_support = "not compiled with PCRE" not in (proc.stderr or "")
+    return _pcre_support
+
+
+# A GNU shorthand means two different things depending on where it sits: inside
+# a bracket expression it contributes to that class, outside it *is* the class.
+# Substituting the outside form everywhere turns `[\w\s*]` into nested brackets,
+# which POSIX reads as a class of `[`, `:`, `]`… — a pattern that matches nearly
+# any line. So both forms are spelled out and the walker below picks one.
+_ERE_CLASS_INNER = {"s": "[:space:]", "w": "[:alnum:]_", "d": "[:digit:]",
+                    "S": "^[:space:]", "W": "^[:alnum:]_", "D": "^[:digit:]"}
+_ERE_STANDALONE = {"s": "[[:space:]]", "w": "[[:alnum:]_]", "d": "[[:digit:]]",
+                   "S": "[^[:space:]]", "W": "[^[:alnum:]_]", "D": "[^[:digit:]]"}
+# `\b` has no ERE equivalent. These consume the boundary character, which is
+# harmless here: every caller wants the matching *file* or *line*, never the
+# match extent.
+_ERE_WORD_START = "(^|[^[:alnum:]_])"
+_ERE_WORD_END = "([^[:alnum:]_]|$)"
+
+
+def _to_ere(pattern: str) -> str:
+    """Make a ripgrep (Rust regex) pattern survive `git grep -E`.
+
+    `-E` is POSIX ERE *plus whatever the platform's regex library adds*, and that
+    difference is a trap. On a GNU/glibc box `\\b`, `\\s` and `\\w` work, so the
+    fallback tier looks correct; on a build without those extensions they are read
+    as the literal characters `b`, `s`, `w`, and every definition pattern returns
+    **zero hits with no error at all**. Non-capturing groups fail the same way —
+    `git grep -E '(?:def|class)'` hunts for the literal text `?:`.
+
+    Both failures are silent, which is the worst possible shape: localization just
+    quietly stops finding anything on someone else's machine. It has now bitten
+    twice — once via `(?:`, and once via `\\s` on macOS, caught by CI — so this
+    walks the pattern and translates every extension to strict ERE rather than
+    trusting the platform. Nothing reads the capture groups, so degrading them is
+    lossless.
+    """
+    out: list[str] = []
+    i, n, in_class = 0, len(pattern), False
+    while i < n:
+        ch = pattern[i]
+        if ch == "\\" and i + 1 < n:
+            nxt = pattern[i + 1]
+            if in_class and nxt in _ERE_CLASS_INNER:
+                out.append(_ERE_CLASS_INNER[nxt])
+            elif not in_class and nxt in _ERE_STANDALONE:
+                out.append(_ERE_STANDALONE[nxt])
+            elif nxt == "b" and not in_class:
+                # A boundary opening an alternative anchors to the left; anywhere
+                # else it closes a symbol and anchors to the right.
+                tail = "".join(out).rstrip()
+                out.append(_ERE_WORD_START if not tail or tail[-1] in "(|"
+                           else _ERE_WORD_END)
+            else:
+                out.append(ch + nxt)       # a genuine escape — pass it through
+            i += 2
+            continue
+        if not in_class and pattern.startswith("(?:", i):
+            out.append("(")
+            i += 3
+            continue
+        if in_class and pattern.startswith("[:", i):
+            # A POSIX class already written by hand: copy it whole, so its
+            # closing ']' is not mistaken for the end of the bracket expression.
+            end = pattern.find(":]", i)
+            if end != -1:
+                out.append(pattern[i:end + 2])
+                i = end + 2
+                continue
+        if not in_class and ch == "[":
+            in_class = True
+        elif in_class and ch == "]":
+            in_class = False
+        out.append(ch)
+        i += 1
+    return "".join(out)

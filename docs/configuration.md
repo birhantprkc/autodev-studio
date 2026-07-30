@@ -85,7 +85,7 @@ fail at precise multi-file edits.
 | `QDRANT_PATH` | `./.qdrant` | On-disk embedded Qdrant storage (no server). |
 | `RRF_DENSE_WEIGHT` | `2.0` | Weight of the semantic channel vs keyword in RRF fusion. Equal weights measurably underperform. |
 | `RRF_K` | `60` | RRF rank offset (measured to make no difference between 5 and 60). |
-| `RIPGREP_ENABLED` | `true` | Use ripgrep as the lexical engine (identifier-aware, per-language definition patterns, `.gitignore`-aware). Off or binary missing → `git grep`: tracked files only, no type filters. |
+| `RIPGREP_ENABLED` | `true` | Use ripgrep as the lexical engine (identifier-aware, per-language definition patterns, `.gitignore`-aware). Off or binary missing → `git grep`: tracked files only; definition searches retain language filters, but the fallback has no `.gitignore`-aware walk. |
 | `RIPGREP_PATH` | `rg` | Binary name on PATH, or an absolute path to it. |
 
 ### Retrieval pipeline
@@ -153,7 +153,7 @@ a setting, so it has no env var. These are the panel-wide knobs:
 |---|---|---|
 | `DEMO_MODE` | `true` | Dry-run the PR stage (logs the PR it would open; never pushes). |
 | `OPEN_REAL_PR` | `true` | Whether real PRs are opened *when* demo mode is off. |
-| `REPOS_DIR` | `~/.codejury/workspace` | Where agent clones + test envs live. **Use a path with no spaces** — some repos' tests assert on rendered file paths and fail spuriously otherwise. |
+| `REPOS_DIR` | `~/.codejury/workspace` | Where agent clones + test envs live. `~` is expanded. **Use a path with no spaces** — some repos' tests assert on rendered file paths and fail spuriously otherwise. |
 | `CLAUDE_MAX_BUDGET_USD` | `2.0` | Per-run spend cap for the Claude CLI. |
 
 To open real PRs: set `DEMO_MODE=false`, authenticate the `gh` CLI (or connect a
@@ -182,4 +182,6 @@ Leave blank to disable. When set, approved tickets can be pushed to a Jira proje
 > settings become unreadable (they're treated as unset, not fatal) — you'll just
 > re-enter the affected API keys.
 
-The complete, commented list lives in [`.env.example`](../.env.example).
+The common baseline configuration lives in [`.env.example`](../.env.example); the
+table above also documents advanced settings exposed through the runtime Settings
+screen and environment variables.

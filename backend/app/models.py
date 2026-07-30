@@ -32,6 +32,7 @@ class TaskStatus(str, enum.Enum):
     in_dev = "in_dev"
     qa = "qa"
     review = "review"
+    blocked = "blocked"
     pr = "pr"
     done = "done"
 
@@ -130,7 +131,7 @@ class ScopeSession(SQLModel, table=True):
     repo_id: int = Field(foreign_key="repo.id", index=True)
     title: str
     kind: str = Field(default="kb")       # kb = repo Q&A | pm = PM scoping chat
-    status: str = Field(default="open")   # open | scoped
+    status: str = Field(default="open")   # open | scoped | delivered | failed
 
     # Scope panel — filled in as the conversation converges.
     requirement_summary: str | None = Field(default=None, sa_column=Column(Text))

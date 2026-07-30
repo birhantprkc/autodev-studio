@@ -42,6 +42,10 @@ class TestReviewChangesRequested:
     def test_empty(self):
         assert not orch._review_changes_requested("")
 
+    def test_inconclusive_is_not_approval(self):
+        assert orch._inconclusive_verdict("VERDICT: INCONCLUSIVE — provider unavailable")
+        assert not orch._inconclusive_verdict("VERDICT: APPROVED")
+
 
 class TestInconclusive:
     def test_error_with_no_text_is_inconclusive(self):

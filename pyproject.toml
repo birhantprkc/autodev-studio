@@ -61,7 +61,8 @@ dependencies = [
 # refinement stage run on. Install it from your package manager
 # (`apt install ripgrep`, `brew install ripgrep`, `cargo install ripgrep`).
 # Without it those calls fall back to `git grep` — functional, but tracked files
-# only and no per-language definition patterns.
+# only. Definition searches still apply language-aware patterns and file filters,
+# but the fallback covers tracked files and has no .gitignore-aware directory walk.
 #
 # The [semantic] extra adds the local dense-embedding channel: real contextual
 # embeddings (fastembed, ONNX/CPU, no Docker/API) over the graph's nodes, stored

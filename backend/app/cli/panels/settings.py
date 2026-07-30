@@ -473,9 +473,10 @@ class SettingsPanel(App[int]):
         engine = result.get("engine") or result.get("tool") or "unknown"
         body = Text("lexical engine: ", style=S("muted")) + Text(str(engine), style="bold")
         if engine != "ripgrep":
-            body += Text("\n\nFalling back to git grep: tracked files only, and no "
-                         "per-language definition patterns, so localization is "
-                         "measurably coarser. Install ripgrep.", style=S("warn"))
+            body += Text("\n\nFalling back to git grep: tracked files only, with "
+                         "language filters retained for definition searches, but no "
+                         ".gitignore-aware walk. Install ripgrep for the full engine.",
+                         style=S("warn"))
         self.push_screen(ProbeResult("Lexical search", body))
 
     def action_toggle_theme(self) -> None:

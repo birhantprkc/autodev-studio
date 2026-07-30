@@ -250,7 +250,8 @@ FIELDS: dict[str, Spec] = {
                             "and the `grep` tool every agent can call mid-run. It is the "
                             "channel that sees what an AST index can't — strings, comments, "
                             "config, templates. Off (or binary missing) = `git grep`: "
-                            "tracked files only, no type filters.",
+                            "tracked files only; definition searches retain language "
+                            "filters, but the fallback has no .gitignore-aware walk.",
                             type="bool", section="Code search"),
     "ripgrep_path": Spec("knowledge", "ripgrep binary",
                          "Binary name on PATH or an absolute path to it. Install with "

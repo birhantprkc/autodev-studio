@@ -135,10 +135,39 @@ class TestEngineSelection:
     def test_ere_translation_drops_non_capturing_groups(self):
         # git grep -E treats '(?:' as literal text and reports no matches rather
         # than erroring, which is why this needs its own assertion.
-        assert search._to_ere(r"(?:def|class)\s+X") == r"(def|class)\s+X"
+        assert search._to_ere(r"(?:def|class)X") == r"(def|class)X"
+
+    def test_ere_translation_leaves_no_gnu_extensions_behind(self):
+        """`-E` is POSIX ERE *plus whatever the platform adds*, and the additions
+        are not portable: a build without them reads `\\s` as a literal `s` and
+        returns zero hits with no error. Every pattern the product ships must
+        come out of the translation using only strict-ERE constructs."""
+        for pattern, _types in search._DEFINITION_PATTERNS.values():
+            ere = search._to_ere(pattern.format(n="cell_width"))
+            leftover = [ext for ext in (r"\s", r"\w", r"\d", r"\b", "(?:") if ext in ere]
+            assert not leftover, f"{leftover} survived translation in {ere}"
+        generic = search._to_ere(search._GENERIC_DEFINITION.format(n="cell_width"))
+        assert not [e for e in (r"\s", r"\w", r"\d", r"\b", "(?:") if e in generic]
+
+    def test_the_ere_tier_still_finds_a_definition(self, repo, monkeypatch):
+        """The translation has to stay *correct*, not merely extension-free —
+        this is the assertion that would have caught the macOS regression."""
+        monkeypatch.setattr(settings, "ripgrep_enabled", False)
+        monkeypatch.setattr(search, "_supports_pcre", lambda root: False)
+        assert search.definitions(str(repo), "cell_width") == ["ansi.py"]
+        assert search.definitions(str(repo), "CellWidth") == ["server.go"]
+        assert search.definitions(str(repo), "ZzzInventedSymbol") == []
 
 
 class TestRefWorktree:
+    def test_tilde_workspace_path_is_expanded(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setattr(settings, "repos_dir", "~/.codejury/workspace")
+        path = git_ops.workdir("https://example.com/org/repo.git")
+        assert path == home / ".codejury" / "workspace" / "org__repo"
+        assert path.parent.is_dir()
+
     def test_it_pins_a_checkout_at_origins_default_branch(self, repo, tmp_path, monkeypatch):
         origin = tmp_path / "origin.git"
         subprocess.run(["git", "clone", "--bare", "-q", str(repo), str(origin)],

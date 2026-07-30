@@ -697,6 +697,10 @@ def _review_changes_requested(text: str) -> bool:
     return "CHANGES REQUESTED" in (text or "").upper()
 
 
+def _inconclusive_verdict(text: str) -> bool:
+    return "INCONCLUSIVE" in (text or "").upper()
+
+
 def _qa_failed(text: str) -> bool:
     """True only on an explicit VERDICT: FAIL (CONCERNS does not trigger a revise)."""
     up = (text or "").upper()
@@ -802,7 +806,34 @@ def run_scope(session_id: int) -> None:
         _run_scope_locked(session_id)
 
 
+def _mark_scope_blocked(session_id: int, reason: str) -> None:
+    """Persist an interrupted/unsafe run so it cannot look runnable or disappear."""
+    with Session(engine) as db:
+        tasks = db.exec(select(Task).where(Task.session_id == session_id)).all()
+        message = f"PIPELINE BLOCKED — {reason[:1000]}"
+        for task in tasks:
+            if task.status != TaskStatus.done.value:
+                task.status = TaskStatus.blocked.value
+                task.current_agent = None
+                task.review_summary = message
+                task.updated_at = utcnow()
+                db.add(task)
+        session = db.get(ScopeSession, session_id)
+        if session is not None:
+            session.status = "failed"
+            db.add(session)
+        db.commit()
+
+
 def _run_scope_locked(session_id: int) -> None:
+    try:
+        _run_scope_locked_impl(session_id)
+    except Exception as exc:  # noqa: BLE001 — persist failure before the worker exits
+        logger.exception("run_scope %s failed unexpectedly", session_id)
+        _mark_scope_blocked(session_id, f"unexpected pipeline error: {exc}")
+
+
+def _run_scope_locked_impl(session_id: int) -> None:
     """Run a whole scope as ONE deliverable: every approved subtask is implemented
     on a SINGLE branch (accumulating), then one QA + Review + a single PR for the
     scope. All subtasks share that PR — so the PR is a complete, valid feature.
@@ -836,6 +867,7 @@ def _run_scope_locked(session_id: int) -> None:
         git_ops.checkout_branch(path, branch)
     except Exception as exc:  # noqa: BLE001
         logger.error("run_scope %s workspace prep failed: %s", session_id, exc)
+        _mark_scope_blocked(session_id, f"workspace preparation failed: {exc}")
         return
 
     # --- Dev: ONE work order for the whole scope ---
@@ -999,6 +1031,16 @@ def _run_scope_locked(session_id: int) -> None:
         # machine-readable verdict; the single reviewer only ever produced prose.
         needs_fix = (verdict == "CHANGES REQUESTED" if verdict
                      else _review_changes_requested(rev_text)) or _qa_failed(qa_text)
+        if (_inconclusive_verdict(qa_text) or _inconclusive_verdict(rev_text)
+                or verdict == "INCONCLUSIVE"):
+            reason = ("QA or Review could not produce a trustworthy verdict; no PR may be "
+                      "opened until the pipeline is rerun successfully.")
+            _mark_scope_blocked(session_id, reason)
+            if jury.enabled() and decision:
+                decision["blocked"] = True
+                _update_all(ids, review_findings=decision)
+            agent_runner.log(rid, "error", reason)
+            return
         if not needs_fix:
             break
         if attempt >= max_rounds:

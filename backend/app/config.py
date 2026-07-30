@@ -70,7 +70,8 @@ class Settings(BaseSettings):
     # pass at the end of retrieval (GrepRAG: lexical search recovers what an AST
     # index cannot model — strings, comments, config, templates) and the `grep`
     # tool every agent can call. Without the binary the same calls fall back to
-    # `git grep` (tracked files only, no type filters) — degraded, never broken.
+    # `git grep` (tracked files only, with equivalent type filters for definition
+    # searches, but no .gitignore-aware walk) — degraded, never broken.
     ripgrep_enabled: bool = True
     ripgrep_path: str = "rg"
 
@@ -346,7 +347,9 @@ class Settings(BaseSettings):
     dev_inject_file_contents: bool = True
 
     # Where agents check out working copies (cloned per repo).
-    repos_dir: str = "./.workspace"
+    # Keep agent workspaces outside the checkout by default. Values supplied
+    # through env/.env may use `~`; consumers expand it before filesystem use.
+    repos_dir: str = str(Path.home() / ".codejury" / "workspace")
 
     # Optional fallback source for OPENAI_API_KEY (e.g. a sibling DeepWiki .env).
     # Empty by default — the primary source is OPENAI_API_KEY in env / .env.

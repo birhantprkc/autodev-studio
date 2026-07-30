@@ -555,8 +555,9 @@ drift.
 
 <br>
 
-Tickets flow Backlog → Scoped → Approved → Dev → QA → Review → PR, with live
-token/cost totals in the header. Hand-rolled design system, zero CDN, dark
+Tickets flow Backlog → Scoped → Approved → Dev → QA → Review → PR, with failed
+or inconclusive deliveries held in Blocked, and live token/cost totals in the
+header. Hand-rolled design system, zero CDN, dark
 **and** light themes.
 
 ![The delivery board](docs/screenshots/board-dark.png)

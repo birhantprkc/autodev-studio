@@ -54,7 +54,7 @@ def chat(system: str, user: str = "", *, model: str | None = None, timeout: int 
     CLI behaves like a plain completion; cost comes from the CLI's own meter."""
     from pathlib import Path
 
-    scratch = Path(settings.repos_dir) / "_chat"
+    scratch = Path(settings.repos_dir).expanduser() / "_chat"
     scratch.mkdir(parents=True, exist_ok=True)
 
     parts = [system]

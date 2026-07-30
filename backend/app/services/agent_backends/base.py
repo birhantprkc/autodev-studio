@@ -83,7 +83,7 @@ class AgentBackend:
 
         from ...config import settings
 
-        scratch = Path(settings.repos_dir) / "_chat"
+        scratch = Path(settings.repos_dir).expanduser() / "_chat"
         scratch.mkdir(parents=True, exist_ok=True)
         parts = [system]
         if json_mode:

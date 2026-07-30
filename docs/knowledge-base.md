@@ -146,10 +146,10 @@ two delivery surfaces — deliberately **not** tied to any one vendor's agent:
 | Dev backend | How the tools arrive |
 |---|---|
 | Any headless coding CLI (Claude Code, Codex, Cursor, Aider, Gemini CLI, …) | a `.codejury/kb` shim written into the working copy and hidden via `.git/info/exclude`, invoked as `.codejury/kb lookup <Symbol>` through the shell every such tool already has |
-| The HTTP SEARCH/REPLACE loop (Groq / OpenAI / Gemini / xAI / custom) | `<<<SEARCH …>>>` / `<<<LOOKUP …>>>` / `<<<CALLERS …>>>` / `<<<OUTLINE …>>>` / `<<<GREP …>>>` request blocks, answered by the harness between rounds |
+| The HTTP SEARCH/REPLACE loop (Groq / OpenAI / Gemini / xAI / custom) | `<<<SEARCH …>>>` / `<<<LOOKUP …>>>` / `<<<CALLERS …>>>` / `<<<EXPAND …>>>` / `<<<OUTLINE …>>>` / `<<<SNIPPET …>>>` / `<<<GREP …>>>` request blocks, answered by the harness between rounds |
 
 No MCP server and no tool-calling support is required, so a model with neither still
-gets the identical five tools. The shim never appears in the Dev agent's diff.
+gets the identical seven tools. The shim never appears in the Dev agent's diff.
 
 ## Freshness
 

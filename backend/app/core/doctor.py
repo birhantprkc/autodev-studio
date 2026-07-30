@@ -53,8 +53,8 @@ def _environment() -> list[dict]:
     checks.append(_check("ripgrep", OK, _version(rg)) if rg else _check(
         "ripgrep", WARN, "not on PATH — searches fall back to `git grep`",
         "apt install ripgrep / brew install ripgrep. Without it, search covers "
-        "tracked files only and loses per-language definition patterns, so "
-        "localization is measurably coarser."))
+        "tracked files only and has no .gitignore-aware walk; definition searches "
+        "still retain language filters, so localization is measurably coarser."))
 
     gh = shutil.which("gh")
     checks.append(_check("gh (GitHub CLI)", OK, _version(gh)) if gh else _check(
