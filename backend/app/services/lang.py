@@ -33,9 +33,11 @@ regex tier — the fidelity ceiling is set by what's installed, never the floor.
 from __future__ import annotations
 
 import ast
+import os
 import re
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -640,23 +642,35 @@ def _ts_first_error(node):
 
 
 def _node_check(content: str, ext: str) -> str | None:
-    """Parse-check JS via node reading stdin. A bare `.js` file may be either
-    dialect (package.json "type" decides, and we don't know it here), so it is
-    checked as CommonJS AND as ESM and rejected only when BOTH fail — valid in
-    either dialect passes. NB: `node --check <file.js>` alone silently exits 0
-    on ESM sources, which is why the explicit --input-type runs are required."""
-    modes = {".cjs": ("commonjs",), ".mjs": ("module",)}.get(ext, ("commonjs", "module"))
+    """Parse-check JS via node using explicit temp files.
+
+    A bare `.js` file may be either dialect (package.json "type" decides,
+    and we don't know it here), so it is checked as CommonJS AND as ESM and
+    rejected only when BOTH fail — valid in either dialect passes.
+    """
+    suffixes = {".cjs": (".cjs",), ".mjs": (".mjs",)}.get(ext, (".cjs", ".mjs"))
     last_err = "does not parse"
-    for mode in modes:
+    for suffix in suffixes:
+        temp_path = None
         try:
-            p = subprocess.run(["node", f"--input-type={mode}", "--check"],
-                               input=content, capture_output=True, text=True, timeout=15)
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False,
+                                             mode="w", encoding="utf-8") as temp:
+                temp.write(content)
+                temp_path = temp.name
+            p = subprocess.run(["node", "--check", temp_path],
+                               capture_output=True, text=True, timeout=15)
         except Exception:  # noqa: BLE001 — gate is best-effort
             return None
+        finally:
+            if temp_path is not None:
+                try:
+                    os.unlink(temp_path)
+                except Exception:
+                    pass
         if p.returncode == 0:
             return None
         line = next((ln.strip() for ln in (p.stderr or "").splitlines()
-                     if "Error" in ln), last_err)
+                     if "Error" in ln or "SyntaxError" in ln), last_err)
         last_err = line[:200]
     return last_err
 
