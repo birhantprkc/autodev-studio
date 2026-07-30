@@ -78,6 +78,26 @@ class TestCanChat:
         monkeypatch.setattr(agent_backends, "is_available", lambda _b: False)
         assert not providers.can_chat("claude-cli")
 
+    def test_keyless_local_openai_compatible_endpoint_is_runnable(self, monkeypatch):
+        monkeypatch.setattr(settings, "custom_base_url", "http://127.0.0.1:11434/v1")
+        monkeypatch.setattr(settings, "custom_api_key", "")
+        assert providers.can_chat("custom")
+
+    def test_local_model_catalog_does_not_require_a_dummy_key(self, monkeypatch):
+        class Response:
+            status_code = 200
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"data": [{"id": "qwen2.5-coder:7b"}, {"id": "llama3.2"}]}
+
+        monkeypatch.setattr(settings, "custom_base_url", "http://localhost:11434/v1")
+        monkeypatch.setattr(settings, "custom_api_key", "")
+        monkeypatch.setattr("httpx.get", lambda *args, **kwargs: Response())
+        assert providers.fetch_models("custom") == ["llama3.2", "qwen2.5-coder:7b"]
+
 
 # --- Ticket key allocation ----------------------------------------------------
 class TestNextKey:

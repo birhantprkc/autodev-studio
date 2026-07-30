@@ -60,7 +60,7 @@ SCOPE = ScopeSession(title="Fix cell-width measurement for combining marks")
 STAGES = {
     "knowledge_provider": "claude-cli", "knowledge_model": "haiku",
     "pm_provider": "claude-cli", "pm_model": "haiku",
-    "planner_provider": "gemini", "planner_model": "gemini-3.1-flash-lite",
+    "planner_provider": "gemini", "planner_model": "gemini-3.5-flash-lite",
     "dev_provider": "claude-cli", "dev_model": "sonnet",
     "qa_provider": "groq", "qa_model": "openai/gpt-oss-120b",
     "review_provider": "groq", "review_model": "llama-3.3-70b-versatile",
@@ -68,7 +68,7 @@ STAGES = {
 
 # (stage key, model, seconds, tokens_in, tokens_out, cost) — keys are live.STAGE_ORDER's
 TIMELINE = [
-    ("plan", "gemini-3.1-flash-lite", 11.4, 16_029, 1_097, 0.0510),
+    ("plan", "gemini-3.5-flash-lite", 11.4, 16_029, 1_097, 0.0510),
     ("dev", "claude-cli sonnet", 96.2, 261_949, 3_498, 0.1890),
     ("qa", "groq openai/gpt-oss-120b", 22.7, 1_551, 357, 0.0074),
 ]

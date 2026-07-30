@@ -132,6 +132,38 @@ def test_aider_parses_text_meter(tmp_path, monkeypatch):
     assert "Applied edit" in res["text"]
 
 
+def test_aider_supports_keyless_ollama_and_passes_its_endpoint(tmp_path, monkeypatch):
+    exe = _fake_cli(tmp_path, "aider",
+                    "import os, sys; sys.stdin.read(); print(os.environ.get('OLLAMA_API_BASE'))")
+    monkeypatch.setattr("app.config.settings.aider_cli_path", exe)
+    monkeypatch.setattr("app.config.settings.custom_base_url", "http://localhost:11434/v1")
+    monkeypatch.setattr("app.config.settings.custom_api_key", "")
+    for name in ("openai_api_key", "anthropic_api_key", "gemini_api_key",
+                 "xai_api_key", "groq_api_key"):
+        monkeypatch.setattr("app.config.settings." + name, "")
+    for name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY",
+                 "XAI_API_KEY", "GROQ_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+
+    res = agent_backends.run("aider", str(tmp_path), "prompt", lambda s, m: None,
+                             model="ollama_chat/qwen2.5-coder:7b")
+    assert res["error"] is None
+
+
+def test_aider_passes_remote_custom_openai_endpoint(tmp_path, monkeypatch):
+    exe = _fake_cli(tmp_path, "aider",
+                    "import os, sys; sys.stdin.read(); "
+                    "print(os.environ.get('AIDER_OPENAI_API_BASE'))")
+    monkeypatch.setattr("app.config.settings.aider_cli_path", exe)
+    monkeypatch.setattr("app.config.settings.custom_base_url", "https://gateway.example/v1")
+    monkeypatch.setattr("app.config.settings.custom_api_key", "custom-test-key")
+
+    res = agent_backends.run("aider", str(tmp_path), "prompt", lambda s, m: None,
+                             model="openai/provider-model")
+    assert res["error"] is None
+    assert "https://gateway.example/v1" in res["text"]
+
+
 def test_gemini_parses_json_envelope(tmp_path, monkeypatch):
     envelope = {"response": "done here",
                 "stats": {"models": {"gemini-2.5-pro": {

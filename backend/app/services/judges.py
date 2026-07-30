@@ -78,7 +78,8 @@ def _spread_model(provider_id: str, registry_default: str) -> str:
 
     The registry's default model is only a guess for a provider whose base URL
     the operator controls — 'openai' commonly points at Groq or a local server,
-    where "gpt-5.5" simply does not exist. A model id the endpoint rejects is an
+    where a model from the public OpenAI catalog may not exist. A model id the
+    endpoint rejects is an
     *abstention* at review time, i.e. a juror that silently isn't there, which is
     the one failure mode this whole subsystem exists to prevent. So:
 

@@ -235,7 +235,7 @@ class Settings(BaseSettings):
     gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai"
     # Added to the fallback pool (comma-separated) once a key is set. These absorb
     # requests Groq rejects for size (413/TPM) or daily quota.
-    gemini_models: str = "gemini-3.1-flash-lite,gemini-flash-lite-latest"
+    gemini_models: str = "gemini-3.5-flash-lite,gemini-flash-latest"
 
     # --- Per-stage models (Groq free tier, OpenAI-compatible) ---
     # Each stage can run on a different model. This spreads load across separate

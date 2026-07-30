@@ -107,12 +107,12 @@ def test_spread_drops_a_model_the_endpoint_does_not_serve(db: Session, monkeypat
     monkeypatch.setattr(settings, "review_provider", "claude-cli")
     monkeypatch.setattr(settings, "review_model", "haiku")
     monkeypatch.setattr(roster, "available_providers", lambda: ["openai"])
-    # The 'openai' provider pointed at an endpoint that has never heard of gpt-5.5.
+    # The 'openai' provider pointed at an endpoint with a different catalog.
     monkeypatch.setattr(providers, "fetch_models",
                         lambda pid: ["openai/gpt-oss-120b", "llama-3.3-70b-versatile"])
     roster.spread_providers(db)
     judge = roster.enabled_judges(db)[0]
-    # Neither gpt-5.5 (registry guess) nor haiku (the Review stage's, on a
+    # Neither registry guess nor haiku (the Review stage's, on a
     # different vendor) exists here — so it lands on the curated model this
     # endpoint does serve, not on whatever happens to sort first.
     assert roster.resolve(judge) == ("openai", "openai/gpt-oss-120b")

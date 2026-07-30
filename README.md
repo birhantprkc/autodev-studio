@@ -241,7 +241,7 @@ Point each one wherever you like:
 ```bash
 /models                                   # who owns each stage, and is it installed here?
 /model dev anthropic claude-sonnet-5      # repoint one stage
-/model planner gemini gemini-3.1-flash-lite
+/model planner gemini gemini-3.5-flash-lite
 /model qa groq openai/gpt-oss-120b
 /settings                                 # or drive it all from the panel — `p` applies
                                           #   a one-provider preset if you'd rather not
@@ -279,7 +279,7 @@ The panel is a roster, not a fixture. `/jury` opens it:
 
   ✓  Correctness & Requirements     claude-cli / sonnet
   ✓  Reliability & Edge Cases       groq / openai/gpt-oss-120b
-  ✓  Security                       gemini / gemini-3.1-flash-lite
+  ✓  Security                       gemini / gemini-3.5-flash-lite
   ✓  Architecture & Maintainability anthropic / claude-sonnet-5
   ·  Performance & Scalability      not seated
   ·  Test Quality                   not seated
@@ -466,7 +466,7 @@ codejury doctor          # or /doctor in the shell, or ./run.sh doctor
 
     Pipeline stages
     ✓  stage: knowledge  claude-cli / haiku
-    ✓  stage: planner    gemini / gemini-3.1-flash-lite
+    ✓  stage: planner    gemini / gemini-3.5-flash-lite
     ✓  stage: dev        claude-cli / sonnet
     ✓  stage: review     claude-cli / haiku
 

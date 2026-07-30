@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import re
 import tempfile
+from urllib.parse import urlsplit
 
 from ...config import settings
 from .base import AgentBackend, Event, new_result, short
@@ -21,6 +22,15 @@ from .base import AgentBackend, Event, new_result, short
 _NUM = r"([\d.,]+)\s*(k|m)?"
 _TOKENS_RE = re.compile(rf"Tokens:\s*{_NUM}\s*sent.*?{_NUM}\s*received", re.IGNORECASE)
 _COST_RE = re.compile(r"Cost:\s*\$([\d.,]+)\s*message,\s*\$([\d.,]+)\s*session", re.IGNORECASE)
+
+
+def _is_local_url(value: str) -> bool:
+    try:
+        host = (urlsplit(value).hostname or "").lower()
+    except ValueError:
+        return False
+    return host in {"localhost", "127.0.0.1", "::1", "host.docker.internal"} \
+        or host.endswith(".localhost")
 
 
 def _num(value: str, suffix: str | None) -> int:
@@ -44,7 +54,7 @@ class AiderBackend(AgentBackend):
     def executable(self) -> str:
         return settings.aider_cli_path
 
-    def _env(self) -> dict:
+    def _env(self, model: str = "") -> dict:
         """Pass through whichever provider keys are configured — aider picks the
         right one from the model name (gpt-*→OpenAI, claude-*→Anthropic, …)."""
         env = os.environ.copy()
@@ -52,9 +62,26 @@ class AiderBackend(AgentBackend):
                          ("ANTHROPIC_API_KEY", settings.anthropic_api_key),
                          ("GEMINI_API_KEY", settings.gemini_api_key),
                          ("XAI_API_KEY", settings.xai_api_key),
-                         ("GROQ_API_KEY", settings.groq_api_key)):
+                         ("GROQ_API_KEY", settings.groq_api_key),
+                         ("OPENAI_API_KEY", settings.custom_api_key)):
             if key:
                 env.setdefault(var, key)
+        base = (settings.custom_base_url or settings.openai_base_url or "").strip()
+        local = _is_local_url(base)
+        lower = (model or "").lower()
+        if lower.startswith(("ollama/", "ollama_chat/")):
+            ollama_base = base if "11434" in base else "http://127.0.0.1:11434"
+            env["OLLAMA_API_BASE"] = ollama_base.split("/v1", 1)[0].rstrip("/")
+        elif lower.startswith("lm_studio/"):
+            env["LM_STUDIO_API_BASE"] = base if local and base else "http://127.0.0.1:1234/v1"
+            env.setdefault("LM_STUDIO_API_KEY", "dummy-api-key")
+        elif lower.startswith("openai/") and settings.custom_base_url:
+            # Aider's OpenAI-compatible adapter reads this variable.  This must
+            # also work for remote custom gateways; local endpoints are merely
+            # the special case where a dummy key is acceptable.
+            env["AIDER_OPENAI_API_BASE"] = base
+            if local:
+                env.setdefault("OPENAI_API_KEY", "dummy-api-key")
         return env
 
     _KEY_VARS = ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY",
@@ -64,13 +91,19 @@ class AiderBackend(AgentBackend):
             model: str | None = None, timeout: int = 1800) -> dict:
         result = new_result()
         exe = self.resolve() or self.executable()
-        env = self._env()
+        env = self._env(model or "")
         # Aider has no login of its own — with no provider key AND no model it
         # drops into an interactive OpenRouter OAuth browser flow and blocks for
         # minutes. Fail fast with a clear message instead of hanging the stage.
+        local_model = (model or "").lower().startswith(("ollama/", "ollama_chat/", "lm_studio/"))
         if not model and not any(v in env for v in self._KEY_VARS):
             result["error"] = ("aider needs a model + a provider API key — set one on "
                                "the Providers tab (aider has no login of its own).")
+            on_event("error", result["error"])
+            return result
+        if model and not any(v in env for v in self._KEY_VARS) and not local_model:
+            result["error"] = ("aider needs a configured provider key for this model, or "
+                                "a local model prefix such as ollama_chat/ or lm_studio/.")
             on_event("error", result["error"])
             return result
         # --message-file avoids arg-length limits; --yes-always answers every

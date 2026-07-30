@@ -1433,7 +1433,8 @@ function buildModelRefreshRow(view) {
   row.querySelector("#models-refresh").addEventListener("click", async (e) => {
     const btn = e.currentTarget; btn.disabled = true; btn.textContent = "Refreshing…";
     const keyed = (view.providers || []).filter(
-      (p) => (p.kind === "openai" || p.kind === "anthropic") && p.key_set);
+      (p) => (p.kind === "anthropic" && p.key_set)
+        || (p.kind === "openai" && (p.key_set || p.local_endpoint)));
     let updated = 0;
     for (const p of keyed) {
       try {

@@ -86,7 +86,8 @@ FIELDS: dict[str, Spec] = {
                               "it the CLI falls back to the host's Claude login.", secret=True,
                               section="API providers"),
     "custom_base_url": Spec("providers", "Custom provider base URL",
-                            "Any OpenAI-compatible endpoint (OpenRouter, Together, DeepSeek, Ollama…).",
+                            "Any OpenAI-compatible endpoint (OpenRouter, Together, DeepSeek, Ollama, "
+                            "or LM Studio). Localhost endpoints may run without an API key.",
                             section="API providers"),
     "custom_api_key": Spec("providers", "Custom provider API key",
                            "Key for the 'custom' provider above.", secret=True,
@@ -464,10 +465,13 @@ def _providers_view() -> list[dict]:
     avail = agent_backends.availability()
     out = []
     for pid, p in providers.PROVIDERS.items():
+        base_url, _ = providers.endpoint(pid)
         entry = {
             "id": pid, "name": p.name, "kind": p.kind, "note": p.note,
             "models": list(p.models), "default_model": p.default_model,
             "key_field": p.key_field, "base_url_field": p.base_url_field,
+            "base_url": base_url,
+            "local_endpoint": providers.is_local_endpoint(base_url),
             "path_field": p.path_field, "key_set": providers.has_key(pid),
         }
         if p.backend:
