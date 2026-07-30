@@ -9,6 +9,7 @@ symbol map / git grep, which is exactly the path asserted here.
 
 from __future__ import annotations
 
+import os
 import subprocess
 
 import pytest
@@ -60,9 +61,10 @@ class TestDispatcher:
 class TestShim:
     def test_installed_shim_answers_a_real_query(self, repo):
         cmd = tools.install(str(repo), "example__repo")
-        assert cmd == ".codejury/kb"
-        p = subprocess.run([str(repo / cmd), "lookup", "cell_width"],
-                           cwd=repo, capture_output=True, text=True, timeout=120)
+        assert cmd == (".codejury/kb.cmd" if os.name == "nt" else ".codejury/kb")
+        args = [str(repo / cmd), "lookup", "cell_width"]
+        p = subprocess.run(args, cwd=repo, capture_output=True, text=True, timeout=120,
+                           shell=os.name == "nt")
         assert p.returncode == 0, p.stderr
         assert "ansi.py" in p.stdout
 
@@ -73,6 +75,8 @@ class TestShim:
         assert ".codejury" not in status
 
     def test_install_fails_open_on_an_unwritable_path(self):
+        if os.name == "nt":
+            pytest.skip("/proc is not an unwritable path on Windows")
         assert tools.install("/proc/nonexistent-codejury", "example__repo") == ""
 
 
@@ -178,7 +182,8 @@ class TestServerBackedShim:
         monkeypatch.setenv("PORT", "1")  # nothing listens there
         cmd = tools.install(str(repo), "example__repo")
         p = subprocess.run([str(repo / cmd), "lookup", "cell_width"], cwd=repo,
-                           capture_output=True, text=True, timeout=120)
+                           capture_output=True, text=True, timeout=120,
+                           shell=os.name == "nt")
         assert p.returncode == 0 and "ansi.py" in p.stdout
 
 

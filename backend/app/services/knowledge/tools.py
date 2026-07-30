@@ -229,8 +229,11 @@ PROTOCOL_BLOCK = (
 
 # A `sh` wrapper rather than a `#!{python}` shebang: an interpreter path
 # containing spaces (a venv under "…/AI_ML projs/…") makes the kernel's shebang
-# parser fail with a bare ENOENT. Quoted exec is immune.
+# parser fail with a bare ENOENT. Quoted exec is immune. Windows gets a `.cmd`
+# launcher because a shebang file without an executable extension is not a
+# directly launchable process there.
 _LAUNCHER = '#!/bin/sh\nexec {python} {script} "$@"\n'
+_WINDOWS_LAUNCHER = '@echo off\r\n"{python}" "{script}" %*\r\n'
 
 _SHIM = '''"""CodeJury repository-index tools. Auto-generated per run; not part of the repo."""
 import json
@@ -314,9 +317,16 @@ def install(cwd: str, repo: str) -> str:
         script = d / f"{_SHIM_NAME}.py"
         script.write_text(_SHIM.format(backend=_backend_root(), repo=repo, cwd=str(root),
                                        url=_base_url(), token=token))
-        shim = d / _SHIM_NAME
-        shim.write_text(_LAUNCHER.format(python=shlex.quote(sys.executable),
-                                         script=shlex.quote(str(script))))
+        if os.name == "nt":
+            shim = d / f"{_SHIM_NAME}.cmd"
+            shim.write_text(_WINDOWS_LAUNCHER.format(python=sys.executable,
+                                                     script=script))
+            command = f"{_SHIM_DIR}/{_SHIM_NAME}.cmd"
+        else:
+            shim = d / _SHIM_NAME
+            shim.write_text(_LAUNCHER.format(python=shlex.quote(sys.executable),
+                                             script=shlex.quote(str(script))))
+            command = f"{_SHIM_DIR}/{_SHIM_NAME}"
         shim.chmod(0o755)
         exclude = root / ".git" / "info" / "exclude"
         if exclude.parent.is_dir():
@@ -325,7 +335,7 @@ def install(cwd: str, repo: str) -> str:
                 exclude.write_text(body.rstrip("\n") + f"\n{_SHIM_DIR}/\n")
     except OSError:
         return ""
-    return f"{_SHIM_DIR}/{_SHIM_NAME}"
+    return command
 
 
 def prompt_block(command: str) -> str:

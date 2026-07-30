@@ -62,4 +62,8 @@ jobs:
         shell: bash
         run: |
           codejury --version
-          codejury doctor --json; rc=$?; test "$rc" -le 1
+          set +e
+          codejury doctor --json
+          rc=$?
+          set -e
+          test "$rc" -le 1

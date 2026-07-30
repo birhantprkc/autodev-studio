@@ -158,12 +158,32 @@ def fork_repo(owner: str, name: str, token: str, timeout: int = 60) -> dict:
 
 
 def slug(repo_url: str) -> str:
+    # Test fixtures and local repositories may arrive as native paths. Treat
+    # them as paths first; splitting a Windows drive path as if it were a URL
+    # produces a slug such as ``C__\\Users\\...`` and an invalid clone target.
+    if not re.match(r"^(?:https?|ssh)://|^git@", repo_url, re.IGNORECASE):
+        return Path(repo_url).name or "repo"
     parts = [x for x in repo_url.rstrip("/").replace(".git", "").replace(":", "/").split("/") if x]
     return f"{parts[-2]}__{parts[-1]}" if len(parts) >= 2 else parts[-1]
 
 
+def _expand_repos_dir(value: str) -> Path:
+    """Expand ``~`` consistently when callers override the setting.
+
+    ``Path.expanduser`` ignores ``HOME`` on Windows and reads ``USERPROFILE``
+    instead. ``HOME`` is nevertheless the conventional override used by CI,
+    containers, and the CLI, so honor it explicitly before falling back to the
+    platform-native expansion.
+    """
+    if value == "~" or value.startswith("~/") or value.startswith("~\\"):
+        home = os.environ.get("HOME") or os.environ.get("USERPROFILE")
+        if home:
+            return Path(home) / value[2:]
+    return Path(value).expanduser()
+
+
 def workdir(repo_url: str) -> Path:
-    base = Path(settings.repos_dir).expanduser().resolve()
+    base = _expand_repos_dir(settings.repos_dir).resolve()
     base.mkdir(parents=True, exist_ok=True)
     return base / slug(repo_url)
 
