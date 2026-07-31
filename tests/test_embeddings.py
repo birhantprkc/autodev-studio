@@ -5,6 +5,8 @@ These run without the [semantic] extra installed and without touching a model â€
 the fusion maths and the fail-open paths are what must never regress.
 """
 
+import contextlib
+
 import pytest
 from app.config import settings
 from app.services.knowledge import embed, retriever
@@ -124,3 +126,59 @@ class TestWeightedRRF:
                  "qualified_name": "builtins.print"}]
         scores = retriever._rrf([(junk, 1.0)], 60)
         assert scores == {}
+
+
+class TestDownloadProgressIsContained:
+    """fastembed downloads the model with a bare tqdm and hardcodes
+    show_progress=True. tqdm redraws with '\\r', which collapses to one line only
+    on a TTY â€” under the CLI's Rich spinner every 1KB chunk became a NEW line, so
+    the first run printed thousands of 'Downloading bytes: ####' rows and buried
+    the interface."""
+
+    def test_tqdm_output_never_reaches_the_terminal(self):
+        import sys
+
+        import tqdm
+        from app.services.knowledge import embed
+
+        with embed._quiet_progress() as buf:
+            for _ in tqdm.tqdm(range(5), total=5):
+                pass
+            print("a stray library print")
+        assert "a stray library print" in buf.getvalue()
+        assert buf.getvalue(), "the bar must be captured, not merely suppressed"
+        # Streams are restored even though tqdm wrote to them.
+        assert sys.stdout is not buf and sys.stderr is not buf
+
+    def test_streams_are_restored_when_the_load_raises(self):
+        import sys
+
+        from app.services.knowledge import embed
+
+        out, err = sys.stdout, sys.stderr
+        with contextlib.suppress(RuntimeError), embed._quiet_progress():
+            raise RuntimeError("download failed")
+        assert sys.stdout is out and sys.stderr is err
+
+    def test_logging_still_reaches_the_real_stream(self):
+        """logging.StreamHandler binds sys.stderr at construction, so swapping it
+        afterwards must not swallow the pipeline's own log output."""
+        import logging
+
+        from app.services.knowledge import embed
+
+        records = []
+
+        class _Capture(logging.Handler):
+            def emit(self, record):
+                records.append(record.getMessage())
+
+        log = logging.getLogger("embed-test")
+        log.addHandler(_Capture())
+        log.setLevel(logging.INFO)
+        try:
+            with embed._quiet_progress():
+                log.info("still logged")
+        finally:
+            log.handlers.clear()
+        assert records == ["still logged"]

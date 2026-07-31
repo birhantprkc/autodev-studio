@@ -35,10 +35,13 @@ back to the graph's BM25 channel.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import logging
 import os
 import subprocess
 import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -132,6 +135,30 @@ def _limit_threads(n: int = 1) -> None:
         os.environ[var] = str(n)
 
 
+@contextlib.contextmanager
+def _quiet_progress():
+    """Swallow fastembed's download progress bar.
+
+    fastembed downloads the model with a bare ``tqdm`` and hardcodes
+    ``show_progress=True`` — there is no flag to pass through ``TextEmbedding``,
+    and tqdm 4.68 ignores ``TQDM_DISABLE``. tqdm redraws with ``\\r``, which
+    collapses to a single line only on a TTY; under the CLI's Rich spinner every
+    1 KB chunk becomes a NEW line instead, so a 90 MB download printed thousands
+    of "Downloading bytes: ####" rows and buried the interface.
+
+    Swapping the streams is safe for logging: ``logging.StreamHandler`` binds
+    ``sys.stderr`` when it is constructed, so handlers made earlier keep writing
+    to the real one and only tqdm's direct writes land in the buffer.
+    """
+    buf = io.StringIO()
+    saved_out, saved_err = sys.stdout, sys.stderr
+    sys.stdout = sys.stderr = buf
+    try:
+        yield buf
+    finally:
+        sys.stdout, sys.stderr = saved_out, saved_err
+
+
 def _get_model():
     global _model, _model_name
     name = _model_id()
@@ -140,8 +167,15 @@ def _get_model():
         _limit_threads(n)
         from fastembed import TextEmbedding
         logger.info("knowledge.embed: loading embedding model %s (%d thread(s), "
-                    "%d MB free)", name, n, free_mb())
-        _model = TextEmbedding(name, threads=n)
+                    "%d MB free) — first run downloads ~90 MB, once", name, n, free_mb())
+        started = time.monotonic()
+        with _quiet_progress() as noise:
+            _model = TextEmbedding(name, threads=n)
+        elapsed = time.monotonic() - started
+        # Report the download as ONE line, and only when there actually was one:
+        # a warm cache loads in well under a second and deserves no announcement.
+        if "Downloading" in noise.getvalue() or elapsed > 5:
+            logger.info("knowledge.embed: model %s ready in %.0fs", name, elapsed)
         _model_name = name
     return _model
 
