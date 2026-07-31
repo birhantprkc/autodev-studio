@@ -347,7 +347,7 @@ def test_agent_cli_judge_gets_a_callable_event_sink(monkeypatch):
 
 
 def test_empanel_polls_every_judge(monkeypatch):
-    monkeypatch.setattr(panel, "_call", lambda system, user, provider, model, workdir="": {
+    monkeypatch.setattr(panel, "_call", lambda *a, **k: {
         "text": '{"verdict": "APPROVE", "summary": "ok", "findings": []}',
         "error": None, "tokens_in": 1, "tokens_out": 1, "cost": 0.0})
     rows = [Judge(id=i, name=f"J{i}", persona="correctness") for i in range(1, 5)]
@@ -356,6 +356,46 @@ def test_empanel_polls_every_judge(monkeypatch):
                         on_event=lambda lvl, msg: events.append((lvl, msg)))
     assert len(ops) == 4 and all(o.usable for o in ops)
     assert any("Empanelling 4 judge" in m for _, m in events)
+
+
+def test_every_juror_gets_a_byte_identical_case_file(monkeypatch):
+    """The panel's prompt-cache saving depends on this and nothing else: if the
+    shared prefix differs by one character between jurors, every provider that
+    discounts a repeated prefix charges all of them full price."""
+    seen: list[str] = []
+
+    def _spy(system, user, provider, model, workdir="", cache_prefix=""):
+        seen.append(cache_prefix)
+        return {"text": '{"verdict": "APPROVE", "summary": "ok", "findings": []}',
+                "error": None, "tokens_in": 1, "tokens_out": 1, "cost": 0.0}
+
+    monkeypatch.setattr(panel, "_call", _spy)
+    rows = [Judge(id=i, name=f"J{i}", persona=p) for i, p in enumerate(
+        ("correctness", "reliability", "security", "architecture"), start=1)]
+    panel.empanel(rows, {"task_key": "T", "title": "t", "criteria": ["c"],
+                         "diff": "d" * 200, "context": "ctx"})
+    assert len(seen) == 4
+    assert len(set(seen)) == 1, "jurors were sent different case files"
+    assert seen[0], "the case file must not be empty, or there is nothing to cache"
+
+
+def test_the_juror_charge_comes_after_the_shared_case_not_before(monkeypatch):
+    """Ordering is the optimisation. The per-juror charge must live in the tail
+    so it cannot break the shared prefix."""
+    captured: dict[str, str] = {}
+
+    def _spy(system, user, provider, model, workdir="", cache_prefix=""):
+        captured["user"] = user
+        captured["prefix"] = cache_prefix
+        return {"text": '{"verdict": "APPROVE", "summary": "s", "findings": []}',
+                "error": None, "tokens_in": 1, "tokens_out": 1, "cost": 0.0}
+
+    monkeypatch.setattr(panel, "_call", _spy)
+    panel.poll_judge(Judge(id=1, name="J", persona="security"),
+                     {"task_key": "T", "title": "t", "criteria": [], "diff": "d"})
+    assert "SECURITY juror" in captured["user"]
+    assert "SECURITY juror" not in captured["prefix"]
+    assert "CASE T" in captured["prefix"]
 
 
 # --- Synthesis ----------------------------------------------------------------

@@ -84,8 +84,26 @@ def judge_user(charge: str, task_key: str, title: str, criteria: list[str], diff
     nothing at all about the user's actual bug. So the jurors get what the human
     said first, and the derived requirement second.
     """
+    return judge_case(task_key, title, criteria, diff, context, impact, dev_summary,
+                      test_output, request, description, localization, alerts) \
+        + judge_charge(charge, evidence)
+
+
+def judge_case(task_key: str, title: str, criteria: list[str], diff: str,
+               context: str = "", impact: str = "", dev_summary: str = "",
+               test_output: str = "", request: str = "", description: str = "",
+               localization: str = "", alerts: str = "") -> str:
+    """The case file every juror sees — byte-identical across the panel.
+
+    Split out from the per-juror charge so it can be built ONCE and handed to
+    every juror as a shared prompt *prefix*. That ordering is the whole point:
+    prompt caching — explicit on Anthropic, automatic on OpenAI/Groq/Gemini/
+    DeepSeek — only ever discounts a matching prefix. With the charge first the
+    prompts diverged at character zero and ~6k tokens of identical case file
+    were paid for at full price by every juror, every round.
+    """
     crit = "\n".join(f"- {c}" for c in criteria) or "- (no explicit criteria — judge general fitness)"
-    blocks = [charge, "", "=" * 70, "", f"CASE {task_key}: {title}", ""]
+    blocks = ["=" * 70, "", f"CASE {task_key}: {title}", ""]
     if request.strip():
         blocks += ["What the user actually asked for, in their own words — this is the "
                    "problem that has to be SOLVED, and it outranks every restatement below:",
@@ -106,12 +124,6 @@ def judge_user(charge: str, task_key: str, title: str, criteria: list[str], diff
                    context.strip()[:CONTEXT_CHARS]]
     if impact.strip():
         blocks += ["", impact.strip()]
-    # Evidence gathered specifically for THIS juror's perspective (see
-    # jury/evidence.py) — the neighbours to compare against, the reachability of
-    # the change, the tests that already exist. Deterministic, from the code
-    # graph, so a finding in this juror's own area can be grounded in it.
-    if evidence.strip():
-        blocks += ["", evidence.strip()]
     if dev_summary.strip():
         blocks += ["", "What the implementing agent says it did (its own account — verify it "
                        "against the diff rather than believing it):",
@@ -121,11 +133,30 @@ def judge_user(charge: str, task_key: str, title: str, criteria: list[str], diff
     if alerts.strip():
         blocks += ["", alerts.strip()]
     blocks += ["", "The implementation under review:", "```diff", diff[:DIFF_CHARS], "```"]
-    # Reachback, offered LAST — immediately before the output contract, so it is
-    # the thing in view when the juror decides whether it can actually support
-    # the finding it is about to make.
+    return "\n".join(blocks)
+
+
+def judge_charge(charge: str, evidence: str = "") -> str:
+    """The per-juror tail: who this juror is, what it alone was given, and the
+    output contract.
+
+    Deliberately last. The charge is the instruction the juror must act on, and
+    the reachback offer sits immediately before the output contract so it is in
+    view exactly when the juror decides whether it can support the finding it is
+    about to make. Everything above this point is identical panel-wide, which is
+    what makes it cacheable.
+    """
     from ..knowledge import tools as kb_tools
 
+    blocks = ["", "=" * 70, ""]
+    # Evidence gathered specifically for THIS juror's perspective (see
+    # jury/evidence.py) — the neighbours to compare against, the reachability of
+    # the change, the tests that already exist. Deterministic, from the code
+    # graph, so a finding in this juror's own area can be grounded in it.
+    if evidence.strip():
+        blocks += [evidence.strip(), ""]
+    blocks += ["YOUR ASSIGNMENT ON THIS PANEL — review the case above from this "
+               "perspective and no other:", "", charge]
     if settings.jury_tool_calls > 0:
         blocks += ["", kb_tools.evidence_block()]
     blocks += ["", _OUTPUT_CONTRACT]

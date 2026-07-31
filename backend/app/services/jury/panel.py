@@ -234,10 +234,15 @@ def _normalize(payload: dict) -> tuple[str, str, list[dict]]:
     return verdict, summary, findings
 
 
-def _call(system: str, user: str, provider: str, model: str, workdir: str = "") -> dict:
+def _call(system: str, user: str, provider: str, model: str, workdir: str = "",
+          cache_prefix: str = "") -> dict:
     """One juror's LLM call. Agentic-CLI providers get the repo working copy so
     they can read files the diff only partially shows; API providers judge from
-    the case file alone."""
+    the case file alone.
+
+    ``cache_prefix`` is the panel-wide case file, kept ahead of this juror's own
+    charge so every provider that discounts a repeated prompt prefix can.
+    """
     if workdir and providers.kind(provider) in ("claude-cli", "agent"):
         backend = providers.agent_backend(provider)
         # The adapters CALL their on_event rather than null-checking it, so a
@@ -245,15 +250,17 @@ def _call(system: str, user: str, provider: str, model: str, workdir: str = "") 
         # abstention and silently costs the panel a whole perspective. The
         # jurors run in parallel, so their step-by-step output would interleave
         # into nonsense anyway; the caller logs each opinion when it lands.
-        res = agent_backends.run(backend, workdir, f"{system}\n\n{user}",
+        res = agent_backends.run(backend, workdir, f"{system}\n\n{cache_prefix}{user}",
                                  lambda level, message: None, model=model)
         return {"text": res.get("text", ""), "tokens_in": res.get("tokens_in", 0),
                 "tokens_out": res.get("tokens_out", 0), "cost": res.get("cost", 0.0),
                 "error": res.get("error")}
-    return llm.chat(system, user, provider=provider, model=model, json_mode=True)
+    return llm.chat(system, user, provider=provider, model=model, json_mode=True,
+                    cache_prefix=cache_prefix)
 
 
-def poll_judge(judge: Judge, case: dict, workdir: str = "", repo: str = "") -> Opinion:
+def poll_judge(judge: Judge, case: dict, workdir: str = "", repo: str = "",
+               case_file: str | None = None) -> Opinion:
     """Run one juror to an Opinion. Never raises — an exception here would take
     down the whole panel over a single misbehaving provider.
 
@@ -270,16 +277,19 @@ def poll_judge(judge: Judge, case: dict, workdir: str = "", repo: str = "") -> O
     op = Opinion(judge_id=judge.id, name=judge.name, persona=judge.persona,
                  provider=provider, model=model)
     charge = personas.charge(judge.persona, judge.focus or "")
-    # Persona-specific, deterministic evidence on top of the shared case file:
-    # the architecture juror sees the neighbours it is asked to compare against,
-    # the security juror sees whether the change is reachable at all, and so on.
-    user = prompts.judge_user(
-        charge, **case,
-        evidence=evidence.for_persona(judge.persona, workdir, case.get("diff", "")))
+    # The case file is identical for every juror, so it is built once by the
+    # caller and reused here as a cacheable prompt prefix. This juror's own
+    # charge and its persona-specific evidence follow it — the architecture
+    # juror sees the neighbours it must compare against, the security juror sees
+    # whether the change is reachable at all, and so on.
+    shared = case_file if case_file is not None else prompts.judge_case(**case)
+    user = prompts.judge_charge(
+        charge, evidence.for_persona(judge.persona, workdir, case.get("diff", "")))
 
     for attempt in range(2):
         try:
-            res = _call(prompts.JUDGE_SYSTEM, user, provider, model, workdir=workdir)
+            res = _call(prompts.JUDGE_SYSTEM, user, provider, model, workdir=workdir,
+                        cache_prefix=shared)
         except Exception as exc:  # noqa: BLE001 — a juror's crash is an abstention
             op.error = f"{type(exc).__name__}: {exc}"[:300]
             return op
@@ -300,6 +310,8 @@ def poll_judge(judge: Judge, case: dict, workdir: str = "", repo: str = "") -> O
             answers = kb_tools.run_requests(repo or _repo_of(workdir), workdir, requests,
                                             limit=settings.jury_tool_calls)
             if answers:
+                # Append to the TAIL, never the shared prefix — a follow-up that
+                # mutated the prefix would miss the cache it just paid to write.
                 user = (f"{user}\n\n{answers}\n\nNow give your verdict as JSON. "
                         "Do not request more lookups.")
                 continue
@@ -336,8 +348,13 @@ def empanel(judge_rows: list[Judge], case: dict, workdir: str = "",
         on_event("info", f"Empanelling {len(judge_rows)} judge(s), {workers} at a time: "
                          + ", ".join(roster.label(j) for j in judge_rows))
     repo = _repo_of(workdir)
+    # Built once for the whole panel: it is byte-identical per juror, and being
+    # identical is what lets every provider that discounts a repeated prompt
+    # prefix charge the 2nd..Nth juror a fraction of the 1st.
+    case_file = prompts.judge_case(**case)
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="juror") as pool:
-        opinions = list(pool.map(lambda j: poll_judge(j, case, workdir, repo), judge_rows))
+        opinions = list(pool.map(
+            lambda j: poll_judge(j, case, workdir, repo, case_file), judge_rows))
     if on_event:
         for op in opinions:
             if op.error:

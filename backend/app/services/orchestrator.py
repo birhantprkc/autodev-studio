@@ -399,7 +399,9 @@ def _dev_agent(path: str, key: str, info: dict, on_event, context: str = "",
             # (proven in the run logs), which is worse than failing loudly.
             on_event("warn", f"{backend} transient error ({res['error'][:80]}) — retrying once")
             time.sleep(15)
-            res = agent_backends.run(backend, path, prompt, on_event, model=model)
+            failed = res
+            res = llm.carry_usage(
+                agent_backends.run(backend, path, prompt, on_event, model=model), failed)
         # Fail open: degrade to the HTTP coder only when the backend can't run at
         # all (not installed / no headless mode / unauthenticated).
         if not res["error"] or not _backend_unavailable(backend, res["error"]):
@@ -545,7 +547,9 @@ def _review_agent(path: str, key: str, criteria: list, diff: str, on_event,
     if _inconclusive(res):
         on_event("warn", f"Review agent could not run ({(res.get('error') or '')[:80]}) — retrying once")
         time.sleep(20)
+        failed = res
         res, provider = _review_once(path, key, criteria, diff, on_event, impact=impact)
+        llm.carry_usage(res, failed)
     if _inconclusive(res):
         res["text"] = (f"VERDICT: INCONCLUSIVE — the review agent could not run "
                        f"({(res.get('error') or 'unknown error')[:160]}). "
@@ -600,7 +604,10 @@ def _qa_agent(key: str, title: str, criteria: list, diff: str, test_out: str, on
         + (f"\n\n{impact}" if impact else "")
     if settings.jury_tool_calls > 0 and path:
         user += "\n" + kb_tools.evidence_block()
-    qa = llm.chat(prompts.QA_SYSTEM, user, provider=settings.qa_provider, model=settings.qa_model)
+    # The case is the cacheable part: the reachback follow-up below re-sends it
+    # verbatim, and a revise round re-sends most of it again next attempt.
+    qa = llm.chat(prompts.QA_SYSTEM, "", provider=settings.qa_provider,
+                  model=settings.qa_model, cache_prefix=user)
     requests = kb_tools.parse_requests(qa.get("text") or "")
     # An answer that is ONLY lookups is a question, not a verdict — answer it and
     # ask once more. A reply that already reached a verdict stands: paying for a
@@ -611,17 +618,23 @@ def _qa_agent(key: str, title: str, criteria: list, diff: str, test_out: str, on
         if answers:
             on_event("info", "QA queried the index: "
                              + ", ".join(f"{n} {a[:40]}" for n, a in requests[:3]))
+            # Same prefix, new tail — so this call reads the case back out of the
+            # cache the first one just paid to write instead of buying it twice.
             follow = llm.chat(prompts.QA_SYSTEM,
-                              f"{user}\n\n{answers}\n\nNow give your verdict. Do not "
+                              f"\n\n{answers}\n\nNow give your verdict. Do not "
                               "request more lookups.",
-                              provider=settings.qa_provider, model=settings.qa_model)
+                              provider=settings.qa_provider, model=settings.qa_model,
+                              cache_prefix=user)
             for k in ("tokens_in", "tokens_out", "cost"):
                 follow[k] = (follow.get(k) or 0) + (qa.get(k) or 0)
             qa = follow
     if _inconclusive(qa):
         on_event("warn", f"QA agent could not run ({(qa.get('error') or '')[:80]}) — retrying once")
         time.sleep(20)
-        qa = llm.chat(prompts.QA_SYSTEM, user, provider=settings.qa_provider, model=settings.qa_model)
+        failed = qa
+        qa = llm.carry_usage(
+            llm.chat(prompts.QA_SYSTEM, "", provider=settings.qa_provider,
+                     model=settings.qa_model, cache_prefix=user), failed)
     if _inconclusive(qa):
         qa["text"] = (f"VERDICT: INCONCLUSIVE — the QA agent could not run "
                       f"({(qa.get('error') or 'unknown error')[:160]}). "
@@ -733,7 +746,9 @@ def _dev_revise(path: str, key: str, title: str, criteria: list, review_text: st
         if res["error"] and _is_transient(res["error"]):
             on_event("warn", f"{backend} transient error ({res['error'][:80]}) — retrying once")
             time.sleep(15)
-            res = agent_backends.run(backend, path, prompt, on_event, model=model)
+            failed = res
+            res = llm.carry_usage(
+                agent_backends.run(backend, path, prompt, on_event, model=model), failed)
         if not res["error"] or not _backend_unavailable(backend, res["error"]):
             return res, label
         on_event("warn", f"{backend} unavailable — HTTP coding agent for revision")

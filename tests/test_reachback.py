@@ -47,8 +47,10 @@ def sequence(*texts):
     queue = list(texts)
     seen: list[str] = []
 
-    def _call(system, user, provider, model, workdir=""):
-        seen.append(user)
+    def _call(system, user, provider, model, workdir="", cache_prefix=""):
+        # Record what the model actually saw: the shared case file is passed
+        # separately so it can be cached, but it is still part of the prompt.
+        seen.append(cache_prefix + user)
         return {"text": queue.pop(0) if queue else "", "tokens_in": 7, "tokens_out": 3,
                 "cost": 0.002, "error": None}
     return _call, seen
