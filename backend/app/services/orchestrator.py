@@ -283,6 +283,36 @@ def _verified_locations(path: str, files: list[str] | None, symbols: list[str] |
     return out[:_VERIFIED_BLOCK_MAX]
 
 
+def _report_dev_efficiency(res: dict, verified: str, on_event) -> None:
+    """Log WHY the Dev stage cost what it cost.
+
+    Dev is ~84% of a delivery's tokens, and that spend is not one big prompt —
+    it is turns. Each turn re-sends the conversation, so a re-read of a file we
+    already injected is paid twice: once to hand it over and again to fetch it.
+    The stream reports every tool call, so the re-read count is a fact we can
+    log rather than a theory to argue about, and it is the number to watch when
+    tuning the injection budget.
+    """
+    turns = res.get("turns") or 0
+    tools = res.get("tools") or {}
+    reads = res.get("read_paths") or []
+    if not turns and not tools:
+        return  # a backend that doesn't report this (fine — no fake numbers)
+    # Which reads were of files whose contents the prompt already carried?
+    injected = {line[4:-4].strip() for line in verified.splitlines()
+                if line.startswith("--- ") and line.endswith(" ---")}
+    redundant = [p for p in reads
+                 if injected and any(p.endswith(f) or f.endswith(p) for f in injected)]
+    summary = ", ".join(f"{n}×{c}" for n, c in sorted(tools.items(), key=lambda kv: -kv[1])[:6])
+    on_event("info", f"Dev efficiency: {turns} turn(s) · {summary or 'no tool calls'}")
+    if injected:
+        on_event(
+            "warn" if redundant else "info",
+            f"Dev re-read {len(redundant)} of {len(injected)} injected file(s)"
+            + (f" — {', '.join(sorted(set(redundant))[:4])}" if redundant else
+               " — injection held; no wasted reads"))
+
+
 def _test_cmd(path: str) -> str:
     """Test command the Dev agent should verify with — '' when tests can't
     actually run here (advertising a broken command just misleads the agent).
@@ -385,14 +415,16 @@ def _dev_agent(path: str, key: str, info: dict, on_event, context: str = "",
         label = _agent_label(provider, model)
         on_event("info", f"Dev model: {label}")
         tools_cmd = _install_dev_tools(path, on_event)
+        verified = _verified_locations(path, info.get("affected_files"),
+                                       info.get("target_symbols"))
         prompt = prompts.dev(key, info["title"], info["description"], info["criteria"], context,
                              affected_files=info.get("affected_files"),
                              target_symbols=info.get("target_symbols"),
                              test_cmd=test_cmd, tools_cmd=tools_cmd,
                              plan=planner.as_prompt(info.get("plan") or {}),
-                             verified=_verified_locations(path, info.get("affected_files"),
-                                                          info.get("target_symbols")))
+                             verified=verified)
         res = agent_backends.run(backend, path, prompt, on_event, model=model)
+        _report_dev_efficiency(res, verified, on_event)
         if res["error"] and _is_transient(res["error"]):
             # Overload/rate-limit/timeout: retry the same backend once. NEVER hand
             # transient failures to the free-tier coder — it produces broken edits

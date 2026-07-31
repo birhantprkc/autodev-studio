@@ -40,6 +40,27 @@ def _child_env() -> dict:
     return env
 
 
+# Tools whose argument is a path we may already have injected into the prompt.
+# A Read of a file whose full contents were handed over is a wasted turn, and
+# turns — not prompt size — are what make the Dev stage 84% of a run's tokens.
+_PATH_TOOLS = ("Read", "NotebookRead")
+
+
+def _record_tool(result: dict, name: str | None, args) -> None:
+    """Tally one tool call so a run can be asked *why* it cost what it did.
+
+    The stream already carries this; not counting it was the reason the token
+    bill could only ever be described, never explained.
+    """
+    if not name:
+        return
+    result["tools"][name] = result["tools"].get(name, 0) + 1
+    if name in _PATH_TOOLS and isinstance(args, dict):
+        path = args.get("file_path") or args.get("path") or ""
+        if path and len(result["read_paths"]) < 200:
+            result["read_paths"].append(str(path))
+
+
 def _short(x, n: int = 160) -> str:
     s = x if isinstance(x, str) else json.dumps(x, ensure_ascii=False)
     s = " ".join(s.split())
@@ -91,7 +112,8 @@ def run_claude(cwd: str, prompt: str, on_event: Event, *, model: str | None = No
     if m:
         cmd += ["--model", m]
 
-    result = {"text": "", "tokens_in": 0, "tokens_out": 0, "cost": 0.0, "error": None}
+    result = {"text": "", "tokens_in": 0, "tokens_out": 0, "cost": 0.0, "error": None,
+              "turns": 0, "tools": {}, "read_paths": []}
     try:
         proc = subprocess.Popen(
             cmd, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -140,12 +162,14 @@ def run_claude(cwd: str, prompt: str, on_event: Event, *, model: str | None = No
                         on_event("info", _short(b["text"].strip(), 400))
                     elif b.get("type") == "tool_use":
                         on_event("info", f"→ {b.get('name')}: {_short(b.get('input'))}")
+                        _record_tool(result, b.get("name"), b.get("input"))
             elif t == "result":
                 result["text"] = ev.get("result", "") or ""
                 u = ev.get("usage", {}) or {}
                 result["tokens_in"] = (u.get("input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0)
                 result["tokens_out"] = u.get("output_tokens") or 0
                 result["cost"] = ev.get("total_cost_usd") or 0.0
+                result["turns"] = ev.get("num_turns") or 0
                 if ev.get("is_error"):
                     result["error"] = result["text"] or "agent reported an error"
         proc.wait(timeout=60)

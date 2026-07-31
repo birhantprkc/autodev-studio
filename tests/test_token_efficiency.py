@@ -170,3 +170,66 @@ class TestNonAnthropicProvidersKeepPrefixFirst:
         monkeypatch.setattr(llm.providers, "kind", lambda p: "openai")
         llm.chat("sys", "TAIL", provider="groq", model="m", cache_prefix="PREFIX")
         assert captured["user"] == "PREFIXTAIL"
+
+
+class TestDevTelemetry:
+    """Dev is ~84% of a delivery's tokens and that spend is turns, not prompt
+    size. These assert the numbers that explain it actually get captured."""
+
+    def test_tool_calls_and_read_paths_are_tallied(self):
+        from app.services import claude_agent
+
+        res = {"tools": {}, "read_paths": []}
+        claude_agent._record_tool(res, "Read", {"file_path": "rich/cells.py"})
+        claude_agent._record_tool(res, "Read", {"file_path": "rich/text.py"})
+        claude_agent._record_tool(res, "Bash", {"command": "pytest"})
+        assert res["tools"] == {"Read": 2, "Bash": 1}
+        assert res["read_paths"] == ["rich/cells.py", "rich/text.py"]
+
+    def test_a_nameless_or_odd_tool_call_does_not_crash_the_run(self):
+        from app.services import claude_agent
+
+        res = {"tools": {}, "read_paths": []}
+        claude_agent._record_tool(res, None, {})
+        claude_agent._record_tool(res, "Read", "not-a-dict")
+        assert res["tools"] == {"Read": 1} and res["read_paths"] == []
+
+    def test_read_paths_are_bounded(self):
+        """A pathological agent must not turn telemetry into a memory leak."""
+        from app.services import claude_agent
+
+        res = {"tools": {}, "read_paths": []}
+        for i in range(500):
+            claude_agent._record_tool(res, "Read", {"file_path": f"f{i}.py"})
+        assert len(res["read_paths"]) == 200
+
+    def test_a_re_read_of_an_injected_file_is_reported_as_waste(self):
+        from app.services import orchestrator
+
+        events = []
+        verified = "pins…\n\n--- rich/cells.py ---\ncode here\n\n--- rich/text.py ---\nmore"
+        orchestrator._report_dev_efficiency(
+            {"turns": 12, "tools": {"Read": 3, "Edit": 1},
+             "read_paths": ["rich/cells.py", "rich/other.py"]},
+            verified, lambda lvl, msg: events.append((lvl, msg)))
+        assert any("12 turn(s)" in m for _, m in events)
+        warned = [m for lvl, m in events if lvl == "warn"]
+        assert warned and "re-read 1 of 2" in warned[0]
+
+    def test_injection_that_held_is_reported_too(self):
+        from app.services import orchestrator
+
+        events = []
+        orchestrator._report_dev_efficiency(
+            {"turns": 4, "tools": {"Edit": 2}, "read_paths": []},
+            "--- rich/cells.py ---\ncode", lambda lvl, msg: events.append((lvl, msg)))
+        assert any("no wasted reads" in m for _, m in events)
+        assert not [m for lvl, m in events if lvl == "warn"]
+
+    def test_a_backend_that_reports_nothing_stays_silent(self):
+        """Never invent a number for a backend that doesn't supply one."""
+        from app.services import orchestrator
+
+        events = []
+        orchestrator._report_dev_efficiency({}, "--- a.py ---", lambda l, m: events.append((l, m)))
+        assert events == []
