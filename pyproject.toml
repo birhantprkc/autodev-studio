@@ -95,9 +95,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/krishagarwal314/autodev-studio"
-Documentation = "https://github.com/krishagarwal314/autodev-studio/tree/main/docs"
-Issues = "https://github.com/krishagarwal314/autodev-studio/issues"
+Homepage = "https://github.com/krishagarwal314/CodeJury"
+Documentation = "https://github.com/krishagarwal314/CodeJury/tree/main/docs"
+Issues = "https://github.com/krishagarwal314/CodeJury/issues"
 
 [project.scripts]
 codejury = "app.cli:main"

@@ -3,7 +3,7 @@
 ## Reporting a vulnerability
 
 Please **do not** open a public issue for a security vulnerability. Instead, use
-GitHub's [private vulnerability reporting](https://github.com/krishagarwal314/autodev-studio/security/advisories/new)
+GitHub's [private vulnerability reporting](https://github.com/krishagarwal314/CodeJury/security/advisories/new)
 (Security → Report a vulnerability). I'll acknowledge receipt within a few days and
 keep you updated on the fix.
 

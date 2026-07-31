@@ -6,7 +6,7 @@ bug reports, docs fixes, and features alike.
 ## Getting set up
 
 ```bash
-git clone https://github.com/krishagarwal314/autodev-studio
+git clone https://github.com/krishagarwal314/CodeJury
 cd codejury
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"       # add ,treesitter for exact non-Python symbol maps

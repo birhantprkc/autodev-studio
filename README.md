@@ -29,7 +29,7 @@ already logged into, so **you may not need an API key at all**.
 
 `pip install` · one command to run · no API key required · **macOS · Linux · Windows**
 
-[![CI](https://github.com/krishagarwal314/autodev-studio/actions/workflows/ci.yml/badge.svg)](https://github.com/krishagarwal314/autodev-studio/actions/workflows/ci.yml)
+[![CI](https://github.com/krishagarwal314/CodeJury/actions/workflows/ci.yml/badge.svg)](https://github.com/krishagarwal314/CodeJury/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
 ![macOS](https://img.shields.io/badge/macOS-000000?logo=apple&logoColor=white)
 ![Linux](https://img.shields.io/badge/Linux-FCC624?logo=linux&logoColor=black)
@@ -428,7 +428,7 @@ are actually usable on the machine you're on.
 ### Install and run — one command
 
 ```bash
-git clone https://github.com/krishagarwal314/autodev-studio
+git clone https://github.com/krishagarwal314/CodeJury
 cd codejury
 ./run.sh
 ```
