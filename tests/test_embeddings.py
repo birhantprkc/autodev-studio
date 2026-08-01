@@ -6,6 +6,8 @@ the fusion maths and the fail-open paths are what must never regress.
 """
 
 import contextlib
+import io
+import types
 
 import pytest
 from app.config import settings
@@ -241,3 +243,93 @@ class TestEmbedUsesRealGraphHelpers:
             ["kept", "a.go::kept", "a.go", "3", "4", '["Function"]', ""],
         ])
         assert [n["name"] for n in embed._nodes("https://x/repo")] == ["kept"]
+
+
+class TestBuildStreamsProgress:
+    """Embedding is the longest stage of a KB build — ~20 minutes for gitea's
+    15,991 nodes — and it reported a single static 88% for all of it, which
+    reads exactly like a hang. The child's stdout is streamed so the number can
+    move while the work happens."""
+
+    def _fake_popen(self, lines, stderr=""):
+        class FakeProc:
+            def __init__(self, *a, **k):
+                self.stdout = iter(lines)
+                self.stderr = io.StringIO(stderr)
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                pass
+        return FakeProc
+
+    def _patch(self, monkeypatch, lines, stderr=""):
+        from app.services.knowledge import embed
+
+        monkeypatch.setattr(embed, "available", lambda: True)
+        monkeypatch.setattr(embed.graph, "available", lambda: True)
+        monkeypatch.setattr(embed, "_enough_ram", lambda: True)
+        monkeypatch.setattr(embed.subprocess, "Popen", self._fake_popen(lines, stderr))
+        return embed
+
+    def test_progress_lines_reach_the_callback_and_vectors_are_returned(self, monkeypatch):
+        embed = self._patch(monkeypatch, [
+            "PROGRESS=200/1000\n", "PROGRESS=600/1000\n", "VECTORS=1000\n"])
+        seen = []
+        assert embed.build("https://x/r", on_progress=lambda d, t: seen.append((d, t))) == 1000
+        assert seen == [(200, 1000), (600, 1000)]
+
+    def test_a_build_with_no_callback_still_works(self, monkeypatch):
+        """The pipeline passes one; a bare call from a script does not."""
+        embed = self._patch(monkeypatch, ["PROGRESS=1/2\n", "VECTORS=2\n"])
+        assert embed.build("https://x/r") == 2
+
+    def test_a_malformed_progress_line_is_ignored_not_fatal(self, monkeypatch):
+        embed = self._patch(monkeypatch, [
+            "PROGRESS=notanumber\n", "PROGRESS=5/10\n", "VECTORS=10\n"])
+        seen = []
+        assert embed.build("https://x/r", on_progress=lambda d, t: seen.append((d, t))) == 10
+        assert seen == [(5, 10)]
+
+    def test_a_child_that_reports_nothing_returns_zero(self, monkeypatch):
+        embed = self._patch(monkeypatch, ["some noise\n"], stderr="ImportError: boom")
+        assert embed.build("https://x/r") == 0
+
+
+class TestPipelineMapsEmbeddingOntoTheBar:
+    def test_embedding_progress_moves_the_percentage(self, monkeypatch):
+        """85→99 belongs to embedding, so the bar advances during the long pole
+        instead of parking on one tick."""
+        from app.services.knowledge import pipeline
+
+        seen: list[tuple[str, int]] = []
+
+        def fake_build(repo_url, on_progress=None):
+            for done in (0, 8000, 15991):
+                on_progress(done, 15991)
+            return 15991
+
+        monkeypatch.setattr(pipeline.graph, "available", lambda: True)
+        monkeypatch.setattr(pipeline.graph, "ensure_indexed", lambda *a: True)
+        monkeypatch.setattr(pipeline.graph, "architecture",
+                            lambda u: {"total_nodes": 120521, "total_edges": 317530})
+        monkeypatch.setattr(pipeline.embed, "available", lambda: True)
+        monkeypatch.setattr(pipeline.embed, "build", fake_build)
+        monkeypatch.setattr(pipeline.git_ops, "rev_parse", lambda p: "abc123")
+        monkeypatch.setattr(pipeline.symbol_map, "build", lambda *a: None)
+        monkeypatch.setattr(pipeline.retriever, "overview", lambda u: "")
+        monkeypatch.setattr(pipeline.analyzer, "analyze_repo",
+                            lambda u: types.SimpleNamespace(files={"a.go": {}}))
+        from app.services.knowledge import freshness
+        monkeypatch.setattr(freshness, "write_meta", lambda *a, **k: None)
+
+        result = pipeline.generate("https://x/r", progress=lambda s, p: seen.append((s, p)))
+
+        # One opening tick announces the stage before any batch has landed; the
+        # counted updates are the ones that carry "done/total".
+        assert [p for s, p in seen if s.startswith("Embedding") and "/" not in s] == [85]
+        assert [p for s, p in seen if "/" in s] == [85, 92, 99]
+        assert result.counts["vectors"] == 15991
+        # The node counts ride along so /kb can say which channel is live.
+        assert "15,991" in [s for s, _ in seen if s.startswith("Embedding")][-1]

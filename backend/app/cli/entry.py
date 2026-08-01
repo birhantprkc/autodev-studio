@@ -209,36 +209,36 @@ def _doctor(shell, args: argparse.Namespace) -> int:
 
 
 def _ingest(shell, args: argparse.Namespace) -> int:
-    import time
-
     from ..core import repos as core_repos
-    from . import render
+    from . import live, render
 
     with shell.ctx.db() as db:
         repo = core_repos.ingest(db, args.git_url, args.branch)
         shell.ctx.select_repo(repo)
-        repo_id = repo.id
-    shell.console.print(render.success(f"Indexing {repo.org}/{repo.name}", shell.g))
+        repo_id, label = repo.id, f"{repo.org}/{repo.name}"
 
     if not args.wait:
+        shell.console.print(render.success(f"Indexing {label}", shell.g))
         shell.console.print(render.note("runs in the background — `codejury repos` to check",
                                         shell.g))
         return 0
 
     # Indexing is a background job that reports through the Repo row; there is
     # no event for it, so --wait polls that row rather than pretending otherwise.
-    with shell.thinking("building the code graph"):
-        while True:
-            time.sleep(1.5)
-            with shell.ctx.db() as db:
-                current = core_repos.require(db, repo_id)
-                status, progress = current.kb_status, current.kb_progress
-            if status in ("ready", "failed"):
-                break
+    # Same live view as `/kb add`, so the two surfaces report identically.
+    shell.console.print(render.note(f"Indexing {label} — Ctrl-C detaches, the build "
+                                    "keeps going", shell.g))
+    status, step = live.watch_kb(shell.console, shell.g, shell.ctx, repo_id)
+
     if status == "failed":
-        shell.console.print(render.error("Indexing failed — see the log above.", shell.g))
+        shell.console.print(render.error(step or "Indexing failed — see the log above.",
+                                         shell.g))
         return 1
-    shell.console.print(render.success(f"Knowledge base ready ({progress}%).", shell.g))
+    if status == "detached":
+        shell.console.print(render.note("Detached — indexing continues.", shell.g,
+                                        style="warn"))
+        return 0
+    shell.console.print(render.success(step or "Knowledge base ready.", shell.g))
     return 0
 
 

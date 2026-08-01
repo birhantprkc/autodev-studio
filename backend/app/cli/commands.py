@@ -152,24 +152,27 @@ def cmd_kb(shell: Shell, args: str) -> None:
     action = (parts[0] if parts else "status").lower()
     rest = parts[1].strip() if len(parts) > 1 else ""
 
+    # `add`/`reindex` start a background job and then watch it. The watcher polls
+    # the Repo row on its own short-lived sessions, so this session is closed
+    # first — holding one open across a multi-minute index would pin a SQLite
+    # connection for the whole build.
+    if action in ("add", "reindex"):
+        with shell.ctx.db() as db:
+            if action == "add":
+                if not rest:
+                    raise CoreError(409, "Give a git URL: /kb add https://github.com/org/repo")
+                repo = core_repos.ingest(db, rest)
+                shell.ctx.select_repo(repo)
+                verb = "Indexing"
+            else:
+                repo = shell.ctx.ensure_repo(db)
+                core_repos.reindex(db, repo.id)
+                verb = "Reindexing"
+            label, repo_id = f"{repo.org}/{repo.name}", repo.id
+        _watch_kb(shell, repo_id, f"{verb} {label}")
+        return
+
     with shell.ctx.db() as db:
-        if action == "add":
-            if not rest:
-                raise CoreError(409, "Give a git URL: /kb add https://github.com/org/repo")
-            repo = core_repos.ingest(db, rest)
-            shell.ctx.select_repo(repo)
-            shell.print(render.success(
-                f"Indexing {repo.org}/{repo.name} — building the code graph in the background.",
-                shell.g))
-            shell.print(render.note("/kb status to watch progress", shell.g))
-            return
-
-        if action == "reindex":
-            repo = shell.ctx.ensure_repo(db)
-            core_repos.reindex(db, repo.id)
-            shell.print(render.success(f"Reindexing {repo.org}/{repo.name}.", shell.g))
-            return
-
         if action == "views":
             repo = shell.ctx.ensure_repo(db)
             views = core_repos.knowledge(db, repo.id)
@@ -189,6 +192,27 @@ def cmd_kb(shell: Shell, args: str) -> None:
 
         # status
         shell.print(render.repos(core_repos.listing(db), shell.ctx.repo_id, shell.g))
+
+
+def _watch_kb(shell: Shell, repo_id: int, headline: str) -> None:
+    """Render a KB build live, then say plainly how it ended.
+
+    Indexing is minutes of work (clone → code graph → symbol map → embeddings),
+    and it used to print "runs in the background" and hand back the prompt —
+    leaving `/kb status` as the only way to find out anything, which reported a
+    bare word with no percentage and no step.
+    """
+    shell.print(render.note(f"{headline} — Ctrl-C detaches, the build keeps going",
+                            shell.g))
+    status, step = live.watch_kb(shell.console, shell.g, shell.ctx, repo_id)
+
+    if status == "ready":
+        shell.print(render.success(step or "Knowledge base ready.", shell.g))
+    elif status == "failed":
+        shell.print(render.error(step or "Indexing failed — see the log above.", shell.g))
+    else:
+        shell.print(render.note("Detached — indexing continues. /kb to check on it.",
+                                shell.g, style="warn"))
 
 
 # ── scopes & tickets ──────────────────────────────────────────────────────────

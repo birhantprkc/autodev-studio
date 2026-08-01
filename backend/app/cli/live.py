@@ -263,3 +263,77 @@ def _log_rows(payload: dict) -> list[str]:
     """
     message = (payload.get("message") or "").strip()
     return [ln.strip() for ln in message.splitlines()[:4] if ln.strip()] if message else []
+
+
+# ── Watching a knowledge-base build ───────────────────────────────────────────
+# Indexing has no event stream — it is a background job that reports through the
+# Repo row (kb_status / kb_progress / kb_step). So this polls that row rather
+# than subscribing, and renders the same two facts the pipeline view shows: how
+# far along, and what it is doing right now.
+
+KB_TERMINAL = ("ready", "failed")
+
+
+def watch_kb(console: Console, g: theme.Glyphs, ctx, repo_id: int,
+             *, poll_s: float = 1.0) -> tuple[str, str]:
+    """Render a KB build until it settles. Returns (status, step).
+
+    Ctrl-C detaches the view, exactly as it does for a pipeline run: the build
+    is on this process's thread pool with a clone and a graph index in flight,
+    and killing the view must not kill the work.
+    """
+    from ..core import repos as core_repos
+
+    def _read() -> tuple[str, int, str]:
+        with ctx.db() as db:
+            repo = core_repos.require(db, repo_id)
+            return (repo.kb_status or "pending", repo.kb_progress or 0,
+                    repo.kb_step or "")
+
+    status, progress, step = _read()
+    started = time.monotonic()
+    try:
+        with Live(_kb_panel(g, status, progress, step, 0.0), console=console,
+                  refresh_per_second=8, transient=False) as live:
+            while status not in KB_TERMINAL:
+                time.sleep(poll_s)
+                status, progress, step = _read()
+                live.update(_kb_panel(g, status, progress, step,
+                                      time.monotonic() - started))
+            live.update(_kb_panel(g, status, progress, step,
+                                  time.monotonic() - started))
+    except KeyboardInterrupt:
+        console.print()
+        return "detached", step
+    return status, step
+
+
+def _kb_panel(g: theme.Glyphs, status: str, progress: int, step: str,
+              elapsed: float) -> RenderableType:
+    done = status == "ready"
+    failed = status == "failed"
+    mark = g.ok if done else (g.fail if failed else g.step)
+    style = "ok" if done else ("err" if failed else "running")
+
+    bar = _kb_bar(progress, done or failed)
+    head = Text.assemble(
+        (f"{mark} ", theme.s(style)),
+        ("knowledge base  ", theme.s("heading")),
+        (bar, theme.s(style)),
+        (f"  {progress:3d}%", theme.s("muted")),
+        (f"   {_elapsed(elapsed)}", theme.s("muted")),
+    )
+    body: list[RenderableType] = [head]
+    if step:
+        body.append(Padding(Text(step, style=theme.s("muted")), (0, 0, 0, 2)))
+    return Padding(Group(*body), (1, 0, 0, 2))
+
+
+def _kb_bar(progress: int, settled: bool, width: int = 28) -> str:
+    filled = int(width * max(0, min(100, progress)) / 100)
+    return "█" * filled + ("░" * (width - filled) if not settled else " " * (width - filled))
+
+
+def _elapsed(seconds: float) -> str:
+    m, s = divmod(int(seconds), 60)
+    return f"{m}m{s:02d}s" if m else f"{s}s"

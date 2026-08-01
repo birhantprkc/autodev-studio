@@ -276,33 +276,61 @@ def _read_bodies(repo_url: str, nodes: list[dict]) -> dict[str, str]:
 
 # --- Build (runs in a subprocess) ---------------------------------------------
 
-def build(repo_url: str) -> int:
+def build(repo_url: str, on_progress=None) -> int:
     """(Re)build the dense index for a repo, in a SUBPROCESS so the model's
     memory is fully reclaimed when it finishes. Returns the vector count
-    (0 on failure/unavailable). Never raises."""
+    (0 on failure/unavailable). Never raises.
+
+    `on_progress(done, total)` is called as the child reports batches. Embedding
+    is by far the longest stage of a KB build — ~20 minutes for gitea's 15,991
+    nodes on a laptop — and it used to sit at a static 88% for all of it, which
+    is indistinguishable from a hang. The child's stdout is streamed rather than
+    captured at exit so that number can move while the work is happening.
+    """
     if not available() or not graph.available():
         return 0
     if not _enough_ram():
         return 0
     env = {**os.environ, "OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1",
            "OPENBLAS_NUM_THREADS": "1"}
+    vectors, deadline = 0, time.monotonic() + _BUILD_TIMEOUT
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             [sys.executable, "-m", "app.services.knowledge.embed", repo_url],
-            capture_output=True, text=True, errors="replace",
-            timeout=_BUILD_TIMEOUT, env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            errors="replace", env=env,
             cwd=str(Path(__file__).resolve().parents[3]),  # backend/
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except OSError as exc:
         logger.warning("knowledge.embed: build subprocess failed: %s", exc)
         return 0
-    for line in reversed((proc.stdout or "").splitlines()):
-        if line.startswith("VECTORS="):
-            n = int(line.split("=", 1)[1] or 0)
-            logger.info("knowledge.embed: indexed %d node vectors for %s", n, repo_url)
-            return n
-    logger.warning("knowledge.embed: build produced no result (%s)",
-                   (proc.stderr or "")[-200:])
+
+    try:
+        for line in proc.stdout:
+            line = line.strip()
+            if line.startswith("PROGRESS="):
+                if on_progress:
+                    done, _, total = line[len("PROGRESS="):].partition("/")
+                    with contextlib.suppress(ValueError, TypeError):
+                        on_progress(int(done), int(total))
+            elif line.startswith("VECTORS="):
+                with contextlib.suppress(ValueError):
+                    vectors = int(line.split("=", 1)[1] or 0)
+            if time.monotonic() > deadline:
+                proc.kill()
+                logger.warning("knowledge.embed: build exceeded %ss — killed", _BUILD_TIMEOUT)
+                return 0
+        proc.wait(timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        proc.kill()
+        logger.warning("knowledge.embed: build subprocess failed: %s", exc)
+        return 0
+
+    if vectors:
+        logger.info("knowledge.embed: indexed %d node vectors for %s", vectors, repo_url)
+        return vectors
+    stderr = (proc.stderr.read() if proc.stderr else "") or ""
+    logger.warning("knowledge.embed: build produced no result (%s)", stderr[-200:])
     return 0
 
 
@@ -396,9 +424,15 @@ def delete(repo_url: str) -> None:
 if __name__ == "__main__":  # subprocess entrypoint (see build())
     _limit_threads()
     url = sys.argv[1] if len(sys.argv) > 1 else ""
+
+    def _emit(done: int, total: int) -> None:
+        # The parent's only window into a 20-minute stage. Unbuffered, or it
+        # arrives in one burst at exit and reports nothing while it matters.
+        print(f"PROGRESS={done}/{total}", flush=True)
+
     try:
-        count = build_inprocess(url)
+        count = build_inprocess(url, progress=_emit)
     except Exception as exc:  # noqa: BLE001
         print(f"ERROR={exc}", file=sys.stderr)
         count = 0
-    print(f"VECTORS={count}")
+    print(f"VECTORS={count}", flush=True)

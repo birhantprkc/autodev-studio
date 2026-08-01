@@ -72,8 +72,17 @@ def generate(repo_url: str, progress=None) -> KnowledgeResult:
         vectors = 0
         if graph_info and embed.available():
             if progress:
-                progress("Embedding code graph nodes…", 88)
-            vectors = embed.build(repo_url)
+                progress("Embedding code graph nodes…", 85)
+
+            # Embedding is the long pole (~20 min on a big repo), so it owns a
+            # real slice of the bar — 85→99 — instead of one static tick. The
+            # node count is the only honest denominator we have.
+            def _embed_progress(done: int, total: int) -> None:
+                if progress and total:
+                    pct = 85 + int(14 * min(done, total) / total)
+                    progress(f"Embedding code graph nodes… {done:,}/{total:,}", pct)
+
+            vectors = embed.build(repo_url, on_progress=_embed_progress)
             if vectors:
                 logger.info("knowledge.pipeline: embedded %d nodes for %s", vectors, repo_url)
             else:

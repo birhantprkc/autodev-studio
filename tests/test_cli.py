@@ -431,3 +431,76 @@ class TestRepoTableShowsIndexingProgress:
         assert "ready" in out
         assert "100%" not in out
         assert "done" not in out
+
+
+class TestKbLiveWatch:
+    """`/kb add` used to print "runs in the background" and hand the prompt
+    back, leaving `/kb status` — a bare word, no percentage, no step — as the
+    only way to learn anything about a multi-minute build."""
+
+    def test_it_polls_until_the_build_settles(self, db: Session, monkeypatch):
+        from app.cli import live, theme
+        from app.cli.context import Context
+        from rich.console import Console
+
+        repo = Repo(name="gitea", org="go-gitea", git_url="https://x/gitea", key_prefix="G",
+                    kb_status="indexing", kb_progress=5, kb_step="Cloning working copy…")
+        db.add(repo)
+        db.commit()
+        db.refresh(repo)
+
+        # Each poll advances the build one step, ending ready.
+        steps = iter([
+            ("indexing", 55, "Indexing code graph…"),
+            ("indexing", 91, "Embedding code graph nodes… 7,000/15,991"),
+            ("ready", 100, "Ready — 120,521 nodes over 6,174 files, 15,991 vectors"),
+        ])
+
+        def advance(_db, _id):
+            state = next(steps, None)
+            if state:
+                repo.kb_status, repo.kb_progress, repo.kb_step = state
+            return repo
+
+        monkeypatch.setattr(live, "time", type("T", (), {
+            "sleep": staticmethod(lambda _s: None),
+            "monotonic": staticmethod(lambda: 0.0)}))
+        from app.core import repos as core_repos
+        monkeypatch.setattr(core_repos, "require", advance)
+
+        console = Console(width=100, no_color=True)
+        with console.capture() as cap:
+            status, step = live.watch_kb(console, theme.Glyphs(False), Context(),
+                                         repo.id, poll_s=0)
+
+        assert status == "ready"
+        assert "15,991 vectors" in step
+        # Live repaints in place, so only the settled frame is in the capture.
+        out = cap.get()
+        assert "100%" in out
+        assert "15,991 vectors" in out
+
+    def test_a_frame_names_the_step_not_just_a_number(self):
+        """Cloning a 400MB history and embedding 15,991 nodes both sit in the
+        middle of the bar; the percentage alone cannot tell them apart."""
+        from app.cli import live, theme
+
+        frame = live._kb_panel(theme.Glyphs(False), "indexing", 91,
+                               "Embedding code graph nodes… 7,000/15,991", 137.0)
+        from rich.console import Console
+        console = Console(width=100, no_color=True)
+        with console.capture() as cap:
+            console.print(frame)
+        out = cap.get()
+        assert "Embedding code graph nodes" in out
+        assert "7,000/15,991" in out
+        assert " 91%" in out
+        assert "2m17s" in out
+
+    def test_the_bar_tracks_the_percentage(self):
+        from app.cli import live
+
+        assert live._kb_bar(0, False).startswith("░")
+        assert live._kb_bar(100, True).strip() == "█" * 28
+        half = live._kb_bar(50, False)
+        assert half.count("█") == 14 and half.count("░") == 14
