@@ -318,15 +318,18 @@ def _kb_panel(g: theme.Glyphs, status: str, progress: int, step: str,
     bar = _kb_bar(progress, done or failed)
     head = Text.assemble(
         (f"{mark} ", theme.s(style)),
-        ("knowledge base  ", theme.s("heading")),
         (bar, theme.s(style)),
-        (f"  {progress:3d}%", theme.s("muted")),
-        (f"   {_elapsed(elapsed)}", theme.s("muted")),
+        (f"  {progress:3d}%", theme.s("heading")),
     )
     body: list[RenderableType] = [head]
     if step:
-        body.append(Padding(Text(step, style=theme.s("muted")), (0, 0, 0, 2)))
-    return Padding(Group(*body), (1, 0, 0, 2))
+        body.append(Text(""))
+        body.append(Text(step, style=theme.s("muted")))
+
+    from . import render
+    return render.frame(Group(*body), g, title="Knowledge base",
+                        subtitle=_elapsed(elapsed),
+                        style="ok" if done else ("err" if failed else "rule"))
 
 
 def _kb_bar(progress: int, settled: bool, width: int = 28) -> str:

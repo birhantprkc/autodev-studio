@@ -504,3 +504,71 @@ class TestKbLiveWatch:
         assert live._kb_bar(100, True).strip() == "█" * 28
         half = live._kb_bar(50, False)
         assert half.count("█") == 14 and half.count("░") == 14
+
+
+class TestFrames:
+    """Every multi-row surface is drawn in a panel. A terminal session is one
+    long scrollback with nothing separating a ticket list from a preflight
+    report, so the frame is the seam."""
+
+    def _out(self, renderable, width=92, ascii_mode=False):
+        from rich.console import Console
+
+        console = Console(width=width, no_color=True, legacy_windows=False)
+        with console.capture() as cap:
+            console.print(renderable)
+        return cap.get()
+
+    def test_a_frame_carries_its_title_and_subtitle(self):
+        from app.cli import render, theme
+        from rich.text import Text
+
+        out = self._out(render.frame(Text("body"), theme.Glyphs(True),
+                                     title="Preflight", subtitle="ready"))
+        assert "Preflight" in out and "ready" in out
+        assert "╭" in out and "╰" in out
+
+    def test_it_degrades_to_ascii_when_glyphs_are_unavailable(self):
+        """A console that cannot draw box characters must get ASCII, not
+        mojibake — same capability probe the glyph vocabulary uses."""
+        from app.cli import render, theme
+        from rich.text import Text
+
+        out = self._out(render.frame(Text("body"), theme.Glyphs(False), title="Preflight"))
+        assert "╭" not in out and "│" not in out
+        assert "+-" in out or "|" in out
+
+    def test_no_frame_sets_a_background(self):
+        """A filled panel is the fastest way to look broken on a light
+        terminal; the palette rule is accents only, never a background."""
+        from app.cli import render, theme
+        from rich.text import Text
+
+        panel = render.frame(Text("body"), theme.Glyphs(True), title="X")
+        assert panel.renderable.style in ("", "none", None)
+
+
+class TestCostFormatting:
+    """Four fixed decimals rendered a $1.94 run as "$1.9400"; sub-cent spend
+    still needs the precision, so the scale picks the places."""
+
+    def _status(self, cost):
+        from app.cli import render, theme
+        from rich.console import Console
+
+        line = render.status_line(repo=None, scope=None, stages={}, demo=True,
+                                  cost=cost, g=theme.Glyphs(True))
+        console = Console(width=100, no_color=True)
+        with console.capture() as cap:
+            console.print(line)
+        return cap.get()
+
+    def test_dollars_read_at_a_glance(self):
+        assert "$1.94" in self._status(1.9400)
+        assert "$1.9400" not in self._status(1.9400)
+
+    def test_sub_cent_spend_keeps_its_precision(self):
+        assert "$0.0042" in self._status(0.0042)
+
+    def test_nothing_is_shown_before_anything_is_spent(self):
+        assert "$" not in self._status(0.0)

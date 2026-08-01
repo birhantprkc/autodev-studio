@@ -51,6 +51,44 @@ _STATUS_STYLE = {
 _PRIORITY_MARK = {"high": ("!", "err"), "medium": ("", "muted"), "low": ("", "muted")}
 
 
+# ── Frames ────────────────────────────────────────────────────────────────────
+# Every multi-row surface is drawn inside one of these. A terminal session is a
+# single long scrollback with no other separation between a ticket list, a
+# preflight report and an agent's reply, and flat output left the reader to find
+# the seams. The frame is the seam.
+#
+# The border is the palette's rule colour and never a background — a filled
+# panel is the fastest way to look broken on a light terminal. Box style is
+# resolved from the same capability check the glyphs use, so a console that
+# cannot draw box characters gets ASCII rather than mojibake.
+
+def _box(g: theme.Glyphs):
+    from rich import box
+
+    # `g.vbar` is "│" only when the unicode probe passed, which makes it a
+    # reliable proxy here without threading the flag through every caller.
+    return box.ROUNDED if g.vbar == "│" else box.ASCII
+
+
+def frame(body: RenderableType, g: theme.Glyphs, *, title: str = "",
+          subtitle: str = "", style: str = "rule") -> RenderableType:
+    """Wrap a surface in a titled panel."""
+    return Padding(
+        Panel(
+            body,
+            box=_box(g),
+            border_style=S(style),
+            title=Text(f" {title} ", style=S("heading")) if title else None,
+            title_align="left",
+            subtitle=Text(f" {subtitle} ", style=S("muted")) if subtitle else None,
+            subtitle_align="right",
+            padding=(1, 2),
+            expand=True,
+        ),
+        (1, 0, 0, 2),
+    )
+
+
 # ── Banner ────────────────────────────────────────────────────────────────────
 def banner(width: int, g: theme.Glyphs, unicode: bool) -> RenderableType:
     mark = Text("\n".join(theme.wordmark(width, unicode)), style=S("brand"))
@@ -94,7 +132,11 @@ def status_line(*, repo: Repo | None, scope: ScopeSession | None, stages: dict[s
     parts.append(Text("demo", style=S("muted")) if demo else Text("LIVE", style=S("warn")))
 
     if cost > 0:
-        parts.append(Text(f"${cost:.4f}", style=S("muted")))
+        # Dollars, read at a glance. Four fixed decimals rendered a $1.94 run as
+        # "$1.9400"; sub-cent spend still needs the precision, so the scale
+        # picks the places rather than one format serving neither case.
+        places = 2 if cost >= 1 else (3 if cost >= 0.1 else 4)
+        parts.append(Text(f"${cost:.{places}f}", style=S("muted")))
 
     return Padding(Text(f"  {g.bullet}  ", style=S("rule")).join(parts), (0, 0, 0, 2))
 
@@ -146,10 +188,12 @@ def tickets(tasks: list[Task], g: theme.Glyphs, *, title: str = "Tickets") -> Re
         table.add_row(gate, t.key, t.title, status,
                       Text(f"{mark}{t.priority}", style=S(priority_style)))
 
-    hint = Text(f"  {g.ok} approved   {g.pending} awaiting approval   "
+    hint = Text(f"{g.ok} approved   {g.pending} awaiting approval   "
                 f"{g.bullet} /approve <KEY|all> to unlock the pipeline", style=S("muted"))
-    return Padding(Group(Text(title, style=S("heading")), Text(""), table, Text(""), hint),
-                   (1, 0, 0, 2))
+    pending = sum(1 for t in tasks if not t.approved)
+    return frame(Group(table, Text(""), hint), g, title=title,
+                 subtitle=f"{len(tasks)} ticket(s), {pending} awaiting approval"
+                          if pending else f"{len(tasks)} ticket(s), all approved")
 
 
 def ticket_detail(task: Task, g: theme.Glyphs) -> RenderableType:
@@ -240,8 +284,11 @@ def repos(rows: list[Repo], active_id: int | None, g: theme.Glyphs) -> Renderabl
     steps = [r for r in rows if r.kb_status == "indexing" and r.kb_step]
     body: list[RenderableType] = [table]
     for r in steps:
-        body.append(Padding(Text(f"{r.org}/{r.name}: {r.kb_step}", style=S("muted")), (0, 0, 0, 3)))
-    return Padding(Group(*body) if len(body) > 1 else table, (1, 0, 0, 2))
+        body.append(Text(""))
+        body.append(Padding(Text(f"{r.org}/{r.name}: {r.kb_step}", style=S("muted")), (0, 0, 0, 1)))
+    ready = sum(1 for r in rows if r.kb_status == "ready")
+    return frame(Group(*body), g, title="Repositories",
+                 subtitle=f"{ready}/{len(rows)} indexed")
 
 
 # ── Plan ──────────────────────────────────────────────────────────────────────
@@ -280,10 +327,7 @@ def plan(plan_obj: dict, g: theme.Glyphs) -> RenderableType:
     verified = plan_obj.get("verified")
     badge = (Text(f"{g.ok} verified against the code graph", style=S("ok")) if verified
              else Text(f"{g.pending} unverified", style=S("warn")))
-    body: list[RenderableType] = [
-        Text("Implementation plan   ", style=S("heading")) + badge,
-        Text(""),
-    ]
+    body: list[RenderableType] = [badge, Text("")]
 
     for i, step in enumerate(steps, 1):
         if isinstance(step, str):
@@ -306,7 +350,9 @@ def plan(plan_obj: dict, g: theme.Glyphs) -> RenderableType:
             for line in _plan_item_lines(item):
                 body.append(Text(f"  {g.bullet} ", style=S("muted")) + Text(line, style=S("path")))
 
-    return Padding(Group(*body), (1, 0, 0, 2))
+    return frame(Group(*body), g, title="Implementation plan",
+                 subtitle=f"{len(steps)} step(s)",
+                 style="ok" if verified else "warn")
 
 
 # ── Per-stage model matrix ────────────────────────────────────────────────────
@@ -337,10 +383,10 @@ def stage_models(values: dict, backends: dict[str, dict], g: theme.Glyphs) -> Re
             status = Text(f"{g.fail} not installed", style=S("warn"))
         table.add_row(label, provider, Text(str(model), style=S("muted")), status)
 
-    hint = Text(f"  /model <stage> <provider> [model]   {g.bullet}   "
+    hint = Text(f"/model <stage> <provider> [model]   {g.bullet}   "
                 f"/settings for everything else", style=S("muted"))
-    return Padding(Group(Text("Agent models", style=S("heading")), Text(""), table, Text(""), hint),
-                   (1, 0, 0, 2))
+    return frame(Group(table, Text(""), hint), g, title="Agent models",
+                 subtitle=f"{len(STAGES)} stages")
 
 
 # ── Preflight ─────────────────────────────────────────────────────────────────
@@ -351,7 +397,7 @@ def doctor(report: dict, g: theme.Glyphs) -> RenderableType:
     of their group — a wall of advice next to working things is what makes a
     diagnostic unreadable.
     """
-    blocks: list[RenderableType] = [Text("Preflight", style=S("heading"))]
+    blocks: list[RenderableType] = []
     mark = {"ok": (g.ok, "ok"), "warn": (g.fail, "warn"), "fail": (g.fail, "err")}
 
     for group in report["groups"]:
@@ -367,13 +413,13 @@ def doctor(report: dict, g: theme.Glyphs) -> RenderableType:
             if c["status"] != "ok" and c["hint"]:
                 hints.append((c["name"], c["hint"]))
 
-        rows: list[RenderableType] = [Text(""), Text(f"  {group['name']}", style=S("brand")),
+        rows: list[RenderableType] = [Text(group["name"], style=S("brand")),
                                       Padding(table, (0, 0, 0, 2))]
         for name, hint in hints:
-            rows.append(Padding(Text(f"{g.bullet} {name}: {hint}", style=S("muted")), (0, 0, 0, 6)))
+            rows.append(Padding(Text(f"{g.bullet} {name}: {hint}", style=S("muted")), (0, 0, 0, 4)))
         blocks.append(Group(*rows))
+        blocks.append(Text(""))
 
-    blocks.append(Text(""))
     if report["ready"]:
         verdict = Text(f"{g.ok} Ready to run.", style=S("ok"))
         if report["warnings"]:
@@ -383,7 +429,9 @@ def doctor(report: dict, g: theme.Glyphs) -> RenderableType:
         verdict = Text(f"{g.fail} {report['failures']} blocking problem(s) — "
                        f"fix those before /run.", style=S("err"))
     blocks.append(verdict)
-    return Padding(Group(*blocks), (1, 0, 0, 2))
+    return frame(Group(*blocks), g, title="Preflight",
+                 subtitle="ready" if report["ready"] else "blocked",
+                 style="ok" if report["ready"] else "err")
 
 
 # ── Help ──────────────────────────────────────────────────────────────────────
@@ -391,10 +439,14 @@ def help_panel(commands: list[tuple[str, str, str]], g: theme.Glyphs) -> Rendera
     """``commands`` is [(name, args, description), …] in registration order."""
     table = Table(box=None, pad_edge=False, show_header=False, padding=(0, 2, 0, 0))
     table.add_column(style=S("brand"), no_wrap=True)
-    table.add_column(style=S("muted"), no_wrap=True)
-    table.add_column()
+    # Not no_wrap: `/kb`'s arg list is 38 characters and, pinned, it stole the
+    # width the descriptions needed — every one of them wrapped early against a
+    # half-empty line. Let it wrap in place instead.
+    table.add_column(style=S("muted"), max_width=20)
+    table.add_column(ratio=1)
     for name, args, description in commands:
         table.add_row(name, args, description)
     intro = Text("Type plainly to talk to the PM agent. Slash commands drive everything else.",
                  style=S("muted"))
-    return Padding(Group(intro, Text(""), table), (1, 0, 0, 2))
+    return frame(Group(intro, Text(""), table), g, title="Commands",
+                 subtitle=f"{len(commands)} available")
