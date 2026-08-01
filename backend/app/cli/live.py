@@ -59,10 +59,17 @@ _SPINNER_ASCII = ["-", "\\", "|", "/"]
 # How much log to keep on screen. Enough to see what an agent is doing, little
 # enough that the timeline stays visible above it on an 80x24 terminal.
 TAIL_LINES = 8
+# The pinned region used to show the stage timeline and nothing else, so a
+# 52-turn Dev run read as one spinner next to the word "Dev" while every tool
+# call scrolled past above it and was gone. These are the lines kept on the
+# RUNNING stage so the window your eye rests on says what is happening now.
+ACTIVITY_LINES = 6
+TOOL_PREFIX = "→"       # claude_agent formats tool calls as "→ Name: input"
 
 
 class _Stage:
-    __slots__ = ("key", "runs", "state", "model", "started", "finished", "cost", "error", "tokens")
+    __slots__ = ("key", "runs", "state", "model", "started", "finished", "cost", "error",
+                 "tokens", "tools", "activity")
 
     def __init__(self, key: str) -> None:
         self.key = key
@@ -74,6 +81,8 @@ class _Stage:
         self.cost = 0.0
         self.tokens = 0
         self.error: str | None = None
+        self.tools = 0              # tool calls seen on the stream so far
+        self.activity: list[str] = []   # most recent lines, for the live window
 
 
 class RunView:
@@ -113,12 +122,24 @@ class RunView:
         elif kind == "run.log":
             message = (payload.get("message") or "").strip()
             if message:
+                stage = self._stage_for(payload.get("run_id"))
                 # Multi-line agent output (a full QA verdict, a review) would
                 # blow the tail out in one event; keep the first lines so the
                 # tail stays a tail.
                 for line in message.splitlines()[:4]:
-                    if line.strip():
-                        self.tail.append((payload.get("severity") or "info", line.strip()))
+                    line = line.strip()
+                    if not line:
+                        continue
+                    self.tail.append((payload.get("severity") or "info", line))
+                    if stage is not None:
+                        # claude_agent renders every tool call as "→ Name: input".
+                        # Counting them live turns the Dev efficiency number —
+                        # previously only reported once the stage had finished —
+                        # into something you can watch while it happens.
+                        if line.startswith(TOOL_PREFIX):
+                            stage.tools += 1
+                        stage.activity.append(line)
+                        del stage.activity[:-ACTIVITY_LINES]
                 del self.tail[:-TAIL_LINES]
 
         elif kind == "run.finished":
@@ -189,9 +210,24 @@ class RunView:
                 model += Text(f"  (round {stage.runs})", style="brand.dim")
             if stage.error:
                 model = Text(stage.error[:60], style="err")
+            if stage.tools:
+                model += Text(f"   {stage.tools} tool call{'s' if stage.tools != 1 else ''}",
+                              style="muted")
             timeline.add_row(self._mark(stage), label, model, self._elapsed(stage))
 
         body: list[RenderableType] = [timeline]
+
+        # What the running agent is doing, right now. The scrollback above still
+        # carries the full log — this is the rolling window, not the archive.
+        running = next((self.stages[k] for k in seen
+                        if self.stages.get(k) and self.stages[k].state == "running"), None)
+        if running is not None and running.activity:
+            body.append(Text(""))
+            body.append(Text(f"  {STAGE_LABEL.get(running.key, running.key)} is doing",
+                             style="heading"))
+            for line in running.activity[-ACTIVITY_LINES:]:
+                style = "brand.dim" if line.startswith(TOOL_PREFIX) else "muted"
+                body.append(Text(f"    {line[:120]}", style=style))
 
         if include_tail and self.tail:
             body.append(Text(""))
@@ -203,12 +239,15 @@ class RunView:
         if self.tokens:
             footer += Text(f"   {self.g.bullet}   {self.tokens:,} tokens", style="muted")
         if self.cost:
-            footer += Text(f"   {self.g.bullet}   ${self.cost:.4f}", style="muted")
+            places = 2 if self.cost >= 1 else 4
+            footer += Text(f"   {self.g.bullet}   ${self.cost:.{places}f}", style="muted")
         footer += Text(f"   {self.g.bullet}   Ctrl-C detaches (the run keeps going)", style="rule")
         body.append(Text(""))
         body.append(footer)
 
-        return Padding(Group(*body), (1, 0, 1, 2))
+        from . import render
+        return render.frame(Group(*body), self.g, title="Delivery",
+                            subtitle=f"{total:.0f}s")
 
 
 def watch(console: Console, g: theme.Glyphs, unicode: bool, work: threading.Thread,

@@ -572,3 +572,71 @@ class TestCostFormatting:
 
     def test_nothing_is_shown_before_anything_is_spent(self):
         assert "$" not in self._status(0.0)
+
+
+class TestLiveActivityWindow:
+    """The pinned region showed the stage timeline and nothing else, so a
+    52-turn Dev run read as one spinner beside the word "Dev" while every tool
+    call scrolled past above it. The scrollback is still the archive; this is
+    the rolling window that says what is happening now."""
+
+    def _view(self):
+        from app.cli import live, theme
+
+        view = live.RunView(theme.Glyphs(True), True)
+        view.apply("run.started", {"agent": "dev", "run_id": 2})
+        view.apply("run.model", {"run_id": 2, "model": "claude-cli/sonnet"})
+        return view
+
+    def _out(self, view):
+        from app.cli import theme
+
+        console = theme.console(width=100, no_color=True)
+        with console.capture() as cap:
+            console.print(view.renderable(include_tail=False))
+        return cap.get()
+
+    def test_the_running_stage_shows_what_it_is_doing(self):
+        view = self._view()
+        view.apply("run.log", {"run_id": 2, "severity": "info",
+                               "message": '→ Edit: {"file_path":"repo-issue-sidebar.ts"}'})
+        out = self._out(view)
+        assert "Dev is doing" in out
+        assert "repo-issue-sidebar.ts" in out
+
+    def test_tool_calls_are_counted_live(self):
+        """The Dev efficiency number used to arrive only once the stage had
+        finished; watching it climb is the point."""
+        view = self._view()
+        for name in ("Read", "Grep", "Edit"):
+            view.apply("run.log", {"run_id": 2, "severity": "info",
+                                   "message": f'→ {name}: {{}}'})
+        view.apply("run.log", {"run_id": 2, "severity": "info",
+                               "message": "just prose, not a tool call"})
+        assert view.stages["dev"].tools == 3
+        assert "3 tool calls" in self._out(view)
+
+    def test_the_window_rolls_rather_than_growing(self):
+        view = self._view()
+        for i in range(20):
+            view.apply("run.log", {"run_id": 2, "severity": "info",
+                                   "message": f"→ Read: file{i}.go"})
+        from app.cli import live
+        assert len(view.stages["dev"].activity) == live.ACTIVITY_LINES
+        out = self._out(view)
+        assert "file19.go" in out and "file0.go" not in out
+
+    def test_activity_is_attributed_to_the_stage_that_logged_it(self):
+        """Two stages can be mid-flight across a revision round; a line must not
+        land on whichever happens to be rendered."""
+        view = self._view()
+        view.apply("run.started", {"agent": "qa", "run_id": 3})
+        view.apply("run.log", {"run_id": 3, "severity": "info", "message": "→ Bash: go test"})
+        assert view.stages["qa"].tools == 1
+        assert view.stages["dev"].tools == 0
+
+    def test_a_finished_stage_stops_showing_its_activity(self):
+        view = self._view()
+        view.apply("run.log", {"run_id": 2, "severity": "info", "message": "→ Read: x.go"})
+        view.apply("run.finished", {"run_id": 2})
+        assert "Dev is doing" not in self._out(view)
