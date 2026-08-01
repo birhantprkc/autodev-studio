@@ -135,19 +135,33 @@ class TestDownloadProgressIsContained:
     the first run printed thousands of 'Downloading bytes: ####' rows and buried
     the interface."""
 
-    def test_tqdm_output_never_reaches_the_terminal(self):
+    def test_direct_stream_writes_are_captured(self):
+        """The mechanism, without depending on the optional stack: anything a
+        library writes straight to stdout/stderr must land in the buffer."""
         import sys
 
-        import tqdm
+        from app.services.knowledge import embed
+
+        with embed._quiet_progress() as buf:
+            print("a stray library print")
+            sys.stderr.write("\rDownloading bytes: ####  12.3MB\r")
+        assert "a stray library print" in buf.getvalue()
+        assert "Downloading bytes" in buf.getvalue()
+        # Streams are restored even though the library wrote to them.
+        assert sys.stdout is not buf and sys.stderr is not buf
+
+    def test_a_real_tqdm_bar_never_reaches_the_terminal(self):
+        """The faithful version. tqdm arrives with fastembed, so it is absent on
+        a core-only install (which is what CI runs) — skip rather than pretend."""
+        import sys
+
+        tqdm = pytest.importorskip("tqdm", reason="tqdm ships with the [semantic] extra")
         from app.services.knowledge import embed
 
         with embed._quiet_progress() as buf:
             for _ in tqdm.tqdm(range(5), total=5):
                 pass
-            print("a stray library print")
-        assert "a stray library print" in buf.getvalue()
         assert buf.getvalue(), "the bar must be captured, not merely suppressed"
-        # Streams are restored even though tqdm wrote to them.
         assert sys.stdout is not buf and sys.stderr is not buf
 
     def test_streams_are_restored_when_the_load_raises(self):
