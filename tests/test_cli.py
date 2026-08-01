@@ -259,3 +259,28 @@ class TestRecordIgnoresConstructionEchoes:
         panel._record("f-dev_provider", "anthropic")
         panel._record("f-dev_provider", "anthropic")
         assert panel._rerender_calls == 1
+
+
+class TestModelCommandValidation:
+    """`/model` joins everything after the provider into the model id, because
+    real ids contain slashes ('openai/gpt-oss-120b'). That made a trailing typo
+    invisible: `/model planner claude-cli sonnet /models` stored the model as
+    "sonnet /models" and the only symptom was the Planner failing mid-run."""
+
+    def test_a_trailing_slash_command_is_rejected(self, db: Session, repos):
+        from app.cli.repl import Shell
+
+        shell = Shell(Context(), console=theme.console())
+        with pytest.raises(CoreError) as exc:
+            commands.resolve("/model").run(shell, "planner claude-cli sonnet /models")
+        assert "doesn't look like a model id" in str(exc.value)
+        assert "/model planner claude-cli sonnet" in str(exc.value)
+
+    def test_a_slashed_model_id_still_works(self, db: Session, repos):
+        """Provider-prefixed ids are the normal case and must not be blocked."""
+        from app.cli.repl import Shell
+
+        shell = Shell(Context(), console=theme.console())
+        commands.resolve("/model").run(shell, "qa groq openai/gpt-oss-120b")
+        from app.config import settings as cfg
+        assert cfg.qa_model == "openai/gpt-oss-120b"

@@ -483,7 +483,19 @@ def cmd_model(shell: Shell, args: str) -> None:
 
     values = {f"{stage}_provider": provider}
     if len(parts) > 2:
-        values[f"{stage}_model"] = " ".join(parts[2:])
+        # Everything after the provider is the model id, because some are
+        # slash-separated ('openai/gpt-oss-120b'). That makes a trailing typo
+        # invisible: `/model planner claude-cli sonnet /models` silently stored
+        # the model as "sonnet /models", and the only symptom was the stage
+        # failing mid-run with the provider's own complaint about it.
+        model = " ".join(parts[2:])
+        if any(p.startswith("/") for p in parts[3:]):
+            raise CoreError(409,
+                            f"'{model}' doesn't look like a model id — it contains a "
+                            f"command. Did you mean two lines?\n"
+                            f"  /model {stage} {provider} {parts[2]}\n"
+                            f"  {parts[3]}")
+        values[f"{stage}_model"] = model
     with shell.ctx.db() as db:
         runtime_settings.update(db, values)
     shell.print(render.success(
