@@ -59,7 +59,7 @@ This isn't a hunch. It is measured.
 
 CodeJury's review stage is built on the finding in **[SE-Jury: An
 LLM-as-Ensemble-Judge Metric for Narrowing the Gap with Human Evaluation in
-SE](https://arxiv.org/pdf/2505.20854)** (Zhou et al., 2025 — Singapore
+SE](https://arxiv.org/abs/2505.20854)** (Zhou et al., 2025 — Singapore
 Management University, DGIST, Monash, NUAA, Huawei, Zhejiang University). The
 paper asks precisely the question a reviewing agent depends on: *how well does an
 automatic judge agree with human experts about whether generated code is
