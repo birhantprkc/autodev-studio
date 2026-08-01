@@ -69,12 +69,26 @@ def generate(repo_url: str, progress=None) -> KnowledgeResult:
 
         # Local dense-embedding index over the graph's nodes (optional, free,
         # CPU) — the real semantic-recall channel fused with BM25 at query time.
+        vectors = 0
         if graph_info and embed.available():
             if progress:
                 progress("Embedding code graph nodes…", 88)
-            n = embed.build(repo_url)
-            if n:
-                logger.info("knowledge.pipeline: embedded %d nodes for %s", n, repo_url)
+            vectors = embed.build(repo_url)
+            if vectors:
+                logger.info("knowledge.pipeline: embedded %d nodes for %s", vectors, repo_url)
+            else:
+                # A zero here is not "nothing to embed" — the graph just told us
+                # it has nodes. It means the build failed, and it used to fail
+                # silently: `graph._int` was renamed out from under `_nodes`, the
+                # AttributeError died inside the build subprocess, and retrieval
+                # ran BM25-only for months with nothing in any log to say so.
+                logger.warning(
+                    "knowledge.pipeline: dense index EMPTY for %s despite %s graph "
+                    "nodes — semantic recall is off, retrieval is BM25-only",
+                    repo_url, graph_info.get("total_nodes"))
+        elif graph_info and not embed.available():
+            logger.info("knowledge.pipeline: semantic extras not installed — "
+                        "BM25-only retrieval for %s", repo_url)
 
         from . import freshness
         freshness.write_meta(repo_url, views_sha=sha,
@@ -83,14 +97,14 @@ def generate(repo_url: str, progress=None) -> KnowledgeResult:
         nodes = int(graph_info.get("total_nodes") or 0)
         edges = int(graph_info.get("total_edges") or 0)
         counts = {"graph_nodes": nodes, "graph_edges": edges,
-                  "symbol_map_files": len(facts.files)}
+                  "symbol_map_files": len(facts.files), "vectors": vectors}
         result = KnowledgeResult(
             generated=True, doc_count=nodes, overview=retriever.overview(repo_url),
             counts=counts,
         )
         logger.info("knowledge.pipeline: %s — %d graph nodes / %d edges, "
-                    "%d files in symbol map (deterministic, $0)",
-                    repo_url, nodes, edges, len(facts.files))
+                    "%d files in symbol map, %d vectors (deterministic, $0)",
+                    repo_url, nodes, edges, len(facts.files), vectors)
         return result
     except Exception as exc:  # noqa: BLE001
         logger.exception("knowledge.pipeline failed for %s", repo_url)

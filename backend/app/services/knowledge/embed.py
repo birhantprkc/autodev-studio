@@ -241,8 +241,8 @@ def _nodes(repo_url: str) -> list[dict]:
             continue
         out.append({
             "name": r[0], "qn": r[1], "file": r[2],
-            "start": graph._int(r[3]), "end": graph._int(r[4]),
-            "label": graph._label(r[5]), "sig": (r[6] or "") if len(r) > 6 else "",
+            "start": graph.as_int(r[3]), "end": graph.as_int(r[4]),
+            "label": graph.node_label(r[5]), "sig": (r[6] or "") if len(r) > 6 else "",
         })
     return out
 

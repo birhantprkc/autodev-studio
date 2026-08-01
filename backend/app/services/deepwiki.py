@@ -127,8 +127,18 @@ def ingest(repo_id: int) -> None:
             repo = db.get(Repo, repo_id)
             repo.kb_status = KBStatus.ready.value
             repo.kb_progress = 100
-            repo.kb_step = (f"Ready — code graph: {knowledge_count} nodes over {doc_count} files"
-                            if knowledge_count else "Knowledge base ready")
+            # Name the dense channel explicitly. "Ready" said nothing about
+            # whether semantic search actually got built, so a repo whose
+            # embedding step failed looked identical to one where it worked —
+            # which is how the graph._int regression stayed invisible.
+            vectors = (knowledge_views or {}).get("vectors", 0)
+            if knowledge_count:
+                dense = (f", {vectors:,} vectors" if vectors
+                         else ", no vectors (BM25-only)")
+                repo.kb_step = (f"Ready — code graph: {knowledge_count} nodes "
+                                f"over {doc_count} files{dense}")
+            else:
+                repo.kb_step = "Knowledge base ready"
             repo.kb_doc_count = doc_count
             repo.kb_knowledge_count = knowledge_count
             repo.kb_views = knowledge_views

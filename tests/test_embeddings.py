@@ -196,3 +196,48 @@ class TestDownloadProgressIsContained:
         finally:
             log.handlers.clear()
         assert records == ["still logged"]
+
+
+class TestEmbedUsesRealGraphHelpers:
+    """`_nodes` called `graph._int` / `graph._label` long after they were renamed
+    to `as_int` / `node_label`. Nothing caught it: the AttributeError happened
+    inside the build subprocess, whose entrypoint prints ERROR= and returns
+    VECTORS=0, which `build()` reports as "no vectors" — indistinguishable from
+    a repo with nothing to embed. The dense channel was silently dead and
+    retrieval had quietly degraded to BM25-only."""
+
+    def test_every_graph_attribute_embed_references_exists(self):
+        import re
+        from pathlib import Path
+
+        from app.services.knowledge import embed, graph
+
+        source = Path(embed.__file__).read_text()
+        missing = [n for n in sorted(set(re.findall(r"\bgraph\.([A-Za-z_]\w*)", source)))
+                   if not hasattr(graph, n)]
+        assert missing == []
+
+    def test_nodes_maps_a_graph_row_without_touching_missing_helpers(self, monkeypatch):
+        """The mapping itself, over a row shaped like the graph's cypher output:
+        labels(n) arrives as a JSON string, line numbers as strings."""
+        from app.services.knowledge import embed
+
+        monkeypatch.setattr(embed.graph, "cypher", lambda url, q: [
+            ["compile", "glob.ts::compile", "web_src/js/utils/glob.ts",
+             "62", "80", '["Method"]', "(s: string)"],
+        ])
+        nodes = embed._nodes("https://x/repo")
+        assert nodes == [{"name": "compile", "qn": "glob.ts::compile",
+                          "file": "web_src/js/utils/glob.ts", "start": 62, "end": 80,
+                          "label": "Method", "sig": "(s: string)"}]
+
+    def test_a_row_missing_its_qualified_name_is_dropped(self, monkeypatch):
+        """qn is the point id and the handle snippet() needs — a row without one
+        cannot be stored or resolved later."""
+        from app.services.knowledge import embed
+
+        monkeypatch.setattr(embed.graph, "cypher", lambda url, q: [
+            ["orphan", None, "a.go", "1", "2", '["Function"]', ""],
+            ["kept", "a.go::kept", "a.go", "3", "4", '["Function"]', ""],
+        ])
+        assert [n["name"] for n in embed._nodes("https://x/repo")] == ["kept"]
