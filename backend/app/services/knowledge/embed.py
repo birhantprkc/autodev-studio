@@ -58,10 +58,17 @@ _BATCH = 8          # small embed batches: bounded ONNX arena
 _UPSERT_EVERY = 200  # but flush to Qdrant in big chunks — local writes are the
                      # slow part, and points are tiny in RAM (768 floats each)
 _MIN_FREE_MB = 900  # refuse to load the model below this much available RAM
-# Threads are the other arena multiplier: each intra-op thread carries its own.
-# Scale with the RAM actually available rather than hard-coding the worst case —
-# a roomy machine should not be throttled to a dev-box budget.
-_THREAD_TIERS = ((3600, 4), (2400, 2))  # (min free MB, threads); else 1
+# Threads and batch size are the two arena multipliers, and both scale with the
+# machine. The old fixed tiers topped out at 4 threads and batch 8 no matter what
+# they ran on, so a 32-core workstation indexed a repo at laptop speed — the
+# dev-box budget this was tuned under had become everyone's ceiling.
+#
+# RAM is the real limit (each intra-op thread carries its own arena), cores are
+# the other, and the smaller wins. One core is left for the rest of the system so
+# a build never makes the machine unusable.
+_ARENA_MB_PER_THREAD = 700  # measured plateau per thread at _DOC_CHARS=700
+_MAX_THREADS = 16           # past this, ONNX intra-op scaling flattens
+_BATCH_TIERS = ((8000, 64), (4000, 32), (2000, 16))  # (min free MB, batch)
 _BUILD_TIMEOUT = 3600
 _UUID_NS = uuid.UUID("6ba7b812-9dad-11d1-80b4-00c04fd430c8")
 
@@ -119,14 +126,36 @@ def _model_id() -> str:
 
 
 def _threads() -> int:
-    """How many ONNX threads this machine can afford right now."""
+    """How many ONNX threads this machine can afford right now.
+
+    The minimum of what RAM can back and what the CPU actually has. Headroom is
+    measured above `_MIN_FREE_MB`, because that floor is reserved — spending it
+    on threads is what invites the OOM killer this module exists to avoid.
+    """
+    cores = os.cpu_count() or 2
+    usable_cores = max(1, cores - 1)          # leave one for everything else
+    mb = free_mb()
+    if mb < 0:                                 # unknown platform — stay modest
+        return min(4, usable_cores)
+    headroom = max(0, mb - _MIN_FREE_MB)
+    by_ram = 1 + int(headroom // _ARENA_MB_PER_THREAD)
+    return max(1, min(usable_cores, by_ram, _MAX_THREADS))
+
+
+def _batch() -> int:
+    """Embed batch size, scaled to available RAM.
+
+    Throughput improves with batch size; so does the ONNX arena, which is why
+    this is a function of free memory rather than a constant. `_BATCH` is the
+    floor a small box gets.
+    """
     mb = free_mb()
     if mb < 0:
-        return 2
-    for floor, n in _THREAD_TIERS:
+        return _BATCH
+    for floor, size in _BATCH_TIERS:
         if mb >= floor:
-            return n
-    return 1
+            return size
+    return _BATCH
 
 
 def _limit_threads(n: int = 1) -> None:
@@ -430,10 +459,15 @@ def build_inprocess(repo_url: str, progress=None, resume: bool = True) -> int:
             client.upsert(coll, points=pending)
             pending.clear()
 
-    for i in range(0, len(todo), _BATCH):
-        batch = todo[i:i + _BATCH]
+    # Sized once, from the memory available when the build starts — re-reading
+    # it per chunk would let the batch shrink and grow with unrelated processes.
+    size = _batch()
+    logger.info("knowledge.embed: %d node(s) to embed — batch %d, %d thread(s), "
+                "%d MB free", len(todo), size, _threads(), free_mb())
+    for i in range(0, len(todo), size):
+        batch = todo[i:i + size]
         texts = [_doc_text(n, bodies.get(n["qn"], "")) for n in batch]
-        vecs = [v.tolist() for v in model.embed(texts, batch_size=_BATCH)]
+        vecs = [v.tolist() for v in model.embed(texts, batch_size=size)]
         pending.extend(
             qm.PointStruct(
                 id=_point_id(n["qn"]), vector=v,

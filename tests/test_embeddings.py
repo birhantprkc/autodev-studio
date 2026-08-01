@@ -56,13 +56,26 @@ def test_ram_guard_blocks_when_tight(monkeypatch):
 
 
 def test_threads_scale_with_available_ram(monkeypatch):
-    """A roomy machine is not throttled to a dev-box budget."""
-    monkeypatch.setattr(embed, "free_mb", lambda: 5000)
-    assert embed._threads() == 4
-    monkeypatch.setattr(embed, "free_mb", lambda: 2500)
-    assert embed._threads() == 2
+    """A roomy machine is not throttled to a dev-box budget.
+
+    Core count is pinned here too: it is now half the decision, so leaving it to
+    whatever the test host happens to have made this assert the machine rather
+    than the policy.
+    """
+    import os as _os
+
+    monkeypatch.setattr(_os, "cpu_count", lambda: 16)
+
     monkeypatch.setattr(embed, "free_mb", lambda: 1200)
-    assert embed._threads() == 1
+    tight = embed._threads()
+    monkeypatch.setattr(embed, "free_mb", lambda: 2500)
+    middling = embed._threads()
+    monkeypatch.setattr(embed, "free_mb", lambda: 12000)
+    roomy = embed._threads()
+
+    assert tight == 1
+    assert tight < middling < roomy
+    assert roomy <= embed._MAX_THREADS
 
 
 def test_doc_text_is_capped_and_prefixed():
@@ -333,3 +346,53 @@ class TestPipelineMapsEmbeddingOntoTheBar:
         assert result.counts["vectors"] == 15991
         # The node counts ride along so /kb can say which channel is live.
         assert "15,991" in [s for s, _ in seen if s.startswith("Embedding")][-1]
+
+
+class TestHardwareScaling:
+    """The old tiers topped out at 4 threads and batch 8 regardless of the
+    machine, so a 32-core workstation indexed a repo at laptop speed — the
+    dev-box budget this was tuned under had become everyone's ceiling."""
+
+    def _at(self, monkeypatch, cores, mb):
+        import os as _os
+
+        from app.services.knowledge import embed
+
+        monkeypatch.setattr(embed, "free_mb", lambda: mb)
+        monkeypatch.setattr(_os, "cpu_count", lambda: cores)
+        return embed._threads(), embed._batch()
+
+    def test_a_big_machine_is_actually_used(self, monkeypatch):
+        threads, batch = self._at(monkeypatch, 32, 64000)
+        assert threads == 16          # _MAX_THREADS, where ONNX scaling flattens
+        assert batch == 64
+
+    def test_a_small_machine_stays_conservative(self, monkeypatch):
+        threads, batch = self._at(monkeypatch, 12, 1110)
+        assert threads == 1
+        assert batch == 8
+
+    def test_cores_cap_threads_when_ram_is_plentiful(self, monkeypatch):
+        """RAM can back more than the CPU has; the smaller of the two wins, and
+        one core is left for the rest of the system."""
+        threads, _ = self._at(monkeypatch, 4, 64000)
+        assert threads == 3
+
+    def test_ram_caps_threads_when_cores_are_plentiful(self, monkeypatch):
+        threads, _ = self._at(monkeypatch, 64, 2300)
+        assert threads == 3           # (2300-900)//700 + 1
+
+    def test_the_reserved_floor_is_never_spent_on_threads(self, monkeypatch):
+        """_MIN_FREE_MB is the OOM guard; budgeting threads out of it is exactly
+        what this module exists to avoid."""
+        threads, _ = self._at(monkeypatch, 64, 900)
+        assert threads == 1
+
+    def test_an_unknown_platform_stays_modest(self, monkeypatch):
+        threads, batch = self._at(monkeypatch, 64, -1)
+        assert threads == 4
+        assert batch == 8
+
+    def test_a_single_core_box_still_gets_one_thread(self, monkeypatch):
+        threads, _ = self._at(monkeypatch, 1, 64000)
+        assert threads == 1
