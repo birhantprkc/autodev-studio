@@ -211,8 +211,13 @@ class TestSyntaxGate:
 
 class TestRunnerDetection:
     def test_python_markers_win(self, tmp_path: Path):
+        """Precedence: a repo that is genuinely Python AND carries a
+        package.json (docs site, frontend assets) tests as Python. The .py file
+        is load-bearing — a manifest with no Python source behind it is tooling
+        config, not an ecosystem (see TestRunnerNeedsSourceNotJustAManifest)."""
         (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n")
         (tmp_path / "package.json").write_text("{}")
+        (tmp_path / "x.py").write_text("x = 1\n")
         runner = lang.detect_runner(tmp_path)
         assert runner is not None and runner.kind == "python"
 
@@ -305,3 +310,84 @@ class TestFailureParsing:
         assert lang.no_tests_found(rspec, 0, "No examples found.\n0 examples, 0 failures\n")
         # a real 10-example green run must NOT read as "no tests"
         assert not lang.no_tests_found(rspec, 0, "10 examples, 0 failures\n")
+
+
+class TestRunnerNeedsSourceNotJustAManifest:
+    """gitea ships a pyproject.toml that exists only to pin three Python
+    linters (djlint, yamllint, zizmor) — 0 .py files against 3,024 .go files.
+    On the manifest alone this returned `pytest -q`, so QA would have run pytest
+    over a Go repo, matched nothing, and reported INCONCLUSIVE for every
+    delivery of the whole benchmark."""
+
+    def test_a_tooling_only_pyproject_does_not_make_it_a_python_repo(self, tmp_path):
+        from app.services import lang
+
+        (tmp_path / "pyproject.toml").write_text(
+            '[project]\nname = "gitea"\n\n[dependency-groups]\ndev = ["djlint==1.42.1"]\n')
+        (tmp_path / "go.mod").write_text("module code.gitea.io/gitea\n")
+        (tmp_path / "main.go").write_text("package main\n")
+
+        runner = lang.detect_runner(tmp_path)
+        assert runner is None or runner.kind != "python"
+
+    def test_a_real_python_repo_still_resolves_to_pytest(self, tmp_path):
+        from app.services import lang
+
+        (tmp_path / "pyproject.toml").write_text('[project]\nname = "x"\n')
+        (tmp_path / "app.py").write_text("x = 1\n")
+        assert lang.detect_runner(tmp_path).kind == "python"
+
+    def test_python_source_in_a_subdirectory_counts(self, tmp_path):
+        from app.services import lang
+
+        (tmp_path / "setup.py").write_text("")
+        pkg = tmp_path / "src" / "pkg"
+        pkg.mkdir(parents=True)
+        (pkg / "mod.py").write_text("x = 1\n")
+        assert lang.detect_runner(tmp_path).kind == "python"
+
+    def test_vendored_python_does_not_vouch_for_the_repo(self, tmp_path):
+        """node_modules/ and vendor/ carry other ecosystems' code; letting them
+        answer 'is this a Python repo?' is how a Go repo gets pytest."""
+        from app.services import lang
+
+        (tmp_path / "pyproject.toml").write_text('[project]\nname = "x"\n')
+        (tmp_path / "go.mod").write_text("module x\n")
+        vendored = tmp_path / "node_modules" / "some-pkg"
+        vendored.mkdir(parents=True)
+        (vendored / "setup.py").write_text("x = 1\n")
+
+        runner = lang.detect_runner(tmp_path)
+        assert runner is None or runner.kind != "python"
+
+
+class TestNodeRunnerNeedsATestScript:
+    """gitea's package.json declares 106 dependencies and no `test` script — its
+    frontend tests run through `make test-frontend` → vitest. Selecting npm on
+    the manifest alone gave QA a runner whose only possible output is "missing
+    script: test": it can never pass and never fail."""
+
+    def _pkg(self, tmp_path, scripts):
+        import json as _json
+        (tmp_path / "package.json").write_text(_json.dumps({"scripts": scripts}))
+        (tmp_path / "index.js").write_text("//\n")
+
+    def test_no_test_script_means_no_runner(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(lang.shutil, "which", lambda _: "/usr/bin/npm")
+        self._pkg(tmp_path, {"build": "vite build"})
+        assert lang.detect_runner(tmp_path) is None
+
+    def test_the_npm_init_placeholder_does_not_count(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(lang.shutil, "which", lambda _: "/usr/bin/npm")
+        self._pkg(tmp_path, {"test": 'echo "Error: no test specified" && exit 1'})
+        assert lang.detect_runner(tmp_path) is None
+
+    def test_a_real_test_script_still_selects_npm(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(lang.shutil, "which", lambda _: "/usr/bin/npm")
+        self._pkg(tmp_path, {"test": "vitest run"})
+        assert lang.detect_runner(tmp_path).kind == "node"
+
+    def test_unreadable_manifest_fails_open_to_no_runner(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(lang.shutil, "which", lambda _: "/usr/bin/npm")
+        (tmp_path / "package.json").write_text("{not json")
+        assert lang.detect_runner(tmp_path) is None

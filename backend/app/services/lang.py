@@ -33,6 +33,7 @@ regex tier — the fidelity ceiling is set by what's installed, never the floor.
 from __future__ import annotations
 
 import ast
+import json
 import os
 import re
 import shutil
@@ -733,12 +734,22 @@ def detect_runner_by_kind(kind: str) -> Runner | None:
 def detect_runner(root: Path) -> Runner | None:
     """Which test ecosystem this repo uses. Python first (preserves existing
     behavior on mixed repos, e.g. a Go tool with a docs/ node project); then by
-    manifest. None = unknown → tests report as inconclusive, never FAIL."""
+    manifest. None = unknown → tests report as inconclusive, never FAIL.
+
+    A manifest alone is not evidence of an ecosystem — polyglot repos carry
+    manifests for their *tooling*. gitea ships a pyproject.toml whose entire
+    contents pin three Python linters (djlint, yamllint, zizmor), and has zero
+    .py files against 3,024 .go files; on the manifest alone this returned
+    `pytest -q`, so QA would have run pytest over a Go repo, found nothing, and
+    reported INCONCLUSIVE for every delivery. So the Python branch also
+    requires Python source to actually exist.
+    """
     if ((root / "pyproject.toml").exists() or (root / "setup.py").exists()
             or (root / "setup.cfg").exists() or (root / "pytest.ini").exists()
             or (root / "tox.ini").exists() or list(root.glob("test_*.py"))
             or ((root / "tests").exists() and _dir_has(root, "*.py"))):
-        return _PYTEST
+        if _has_source(root, ".py"):
+            return _PYTEST
     if (root / "go.mod").exists() and shutil.which("go"):
         return _GO
     if (root / "Cargo.toml").exists() and shutil.which("cargo"):
@@ -754,9 +765,25 @@ def detect_runner(root: Path) -> Runner | None:
     if ((root / "spec").exists() and (root / "Gemfile").exists()
             and shutil.which("bundle")):
         return _RSPEC
-    if (root / "package.json").exists() and shutil.which("npm"):
+    # A package.json is not a test suite. gitea's declares 106 dependencies and
+    # no `test` script at all (its frontend tests run via `make test-frontend` →
+    # vitest), so selecting npm here would run a command whose only possible
+    # output is "missing script: test" — a runner that cannot pass or fail.
+    # Returning None instead is the honest answer: QA reports INCONCLUSIVE,
+    # which the pipeline already refuses to treat as a pass.
+    if (root / "package.json").exists() and shutil.which("npm") and _npm_test_script(root):
         return _NODE
     return None
+
+
+def _npm_test_script(root: Path) -> bool:
+    try:
+        manifest = json.loads((root / "package.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    script = (manifest.get("scripts") or {}).get("test") or ""
+    # npm init writes a placeholder that exits 1 with "no test specified".
+    return bool(script.strip()) and "no test specified" not in script
 
 
 def _dir_has(root: Path, pattern: str) -> bool:
@@ -765,6 +792,23 @@ def _dir_has(root: Path, pattern: str) -> bool:
         return True
     except (StopIteration, OSError):
         return False
+
+
+def _has_source(root: Path, ext: str, limit: int = 4000) -> bool:
+    """Does this repo contain real source of `ext`? Walks os.walk pruned by
+    SKIP_DIRS — vendor/ and node_modules/ carry other ecosystems' code and would
+    otherwise vouch for an ecosystem the repo doesn't use. Bounded: this runs on
+    the QA path, and one hit is all the answer needs."""
+    seen = 0
+    for current, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
+        for name in files:
+            if name.endswith(ext):
+                return True
+            seen += 1
+            if seen > limit:
+                return False
+    return False
 
 
 def parse_failures(runner: Runner, output: str) -> set[str] | None:
