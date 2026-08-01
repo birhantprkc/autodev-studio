@@ -284,3 +284,150 @@ class TestModelCommandValidation:
         commands.resolve("/model").run(shell, "qa groq openai/gpt-oss-120b")
         from app.config import settings as cfg
         assert cfg.qa_model == "openai/gpt-oss-120b"
+
+
+class TestKbViews:
+    """`/kb views` renders the same envelope the web Analysis screen consumes —
+    {slug, total, labels, order, domains} — not a bare {domain: items} mapping.
+    Iterating the envelope's top level walked `slug` (a str) and then `total`
+    (an int), so the command died on `len(15)` the moment a repo had any
+    knowledge at all."""
+
+    def _views(self, monkeypatch, payload):
+        from app.core import repos as core_repos
+
+        monkeypatch.setattr(core_repos, "knowledge", lambda db, repo_id: payload)
+
+    def test_counts_come_from_the_domains_map(self, db: Session, monkeypatch, capsys):
+        from app.cli.repl import Shell
+
+        self._views(monkeypatch, {
+            "slug": "go-gitea__gitea", "total": 3,
+            "labels": {"structure": "Code graph", "deliveries": "Delivery notes"},
+            "order": ["structure", "deliveries"],
+            "domains": {"structure": [{"id": "graph_architecture"}],
+                        "deliveries": [{"id": "a"}, {"id": "b"}]},
+        })
+        repo = Repo(name="gitea", org="go-gitea", git_url="https://x/gitea", key_prefix="G")
+        db.add(repo)
+        db.commit()
+
+        shell = Shell(Context(), console=theme.console())
+        commands.resolve("/kb").run(shell, "views")
+        out = capsys.readouterr().out
+        # Labelled by domain, counted from the lists — never from `total`/`slug`.
+        assert "Code graph: 1 entries" in out
+        assert "Delivery notes: 2 entries" in out
+        assert "slug:" not in out
+
+    def test_an_empty_envelope_reports_nothing_generated(self, db: Session, monkeypatch, capsys):
+        """`total`/`slug` are always present, so truthiness of the envelope says
+        nothing about whether any knowledge exists — the domains do."""
+        from app.cli.repl import Shell
+
+        self._views(monkeypatch, {
+            "slug": "go-gitea__gitea", "total": 0, "labels": {}, "order": [],
+            "domains": {"structure": [], "deliveries": []},
+        })
+        repo = Repo(name="gitea", org="go-gitea", git_url="https://x/gitea", key_prefix="G")
+        db.add(repo)
+        db.commit()
+
+        shell = Shell(Context(), console=theme.console())
+        commands.resolve("/kb").run(shell, "views")
+        assert "No structured knowledge" in capsys.readouterr().out
+
+
+class TestReplSurvivesABadCommand:
+    """The catch-all in Shell.run is the last thing between a buggy command and
+    a lost session — including a background KB ingest running in-process. It
+    consulted `cfg.log_level`, which does not exist on Settings, so the
+    AttributeError escaped the handler and killed the shell."""
+
+    def test_the_debug_toggle_does_not_read_a_missing_setting(self):
+        from app.config import settings as cfg
+
+        assert not hasattr(cfg, "log_level")
+
+    def test_no_cli_module_reads_a_setting_that_does_not_exist(self):
+        """Same class of bug, one grep wider: any `cfg.<name>` in the CLI that
+        Settings doesn't define is a crash waiting for the line to execute."""
+        import re
+        from pathlib import Path
+
+        from app.config import settings as cfg
+
+        cli = Path(commands.__file__).parent
+        missing = [
+            (path.name, name)
+            for path in cli.rglob("*.py")
+            for name in re.findall(r"\bcfg\.([a-z_][a-z0-9_]*)", path.read_text())
+            if not hasattr(cfg, name)
+        ]
+        assert missing == []
+
+
+class TestInterruptedIndexIsReconciled:
+    """Indexing runs on this process's thread pool, so an `indexing` row at boot
+    is always a corpse. Left alone it reads as live work forever — which is what
+    sent a real gitea ingest looking like it was running when the clone had died
+    with the shell twenty minutes earlier."""
+
+    def test_boot_fails_a_row_left_indexing(self, db: Session):
+        from app.core import repos as core_repos
+
+        repo = Repo(name="gitea", org="go-gitea", git_url="https://x/gitea", key_prefix="G",
+                    kb_status="indexing", kb_progress=5, kb_step="Cloning working copy…")
+        db.add(repo)
+        db.commit()
+
+        assert core_repos.reconcile_interrupted(db) == 1
+        db.refresh(repo)
+        assert repo.kb_status == "failed"
+        # The remedy has to be in the message, or the state is a dead end.
+        assert "/kb reindex" in repo.kb_error
+        assert "5%" in repo.kb_error
+
+    def test_it_leaves_every_other_status_alone(self, db: Session):
+        from app.core import repos as core_repos
+
+        rows = [Repo(name=n, org="o", git_url=f"https://x/{n}", key_prefix="X", kb_status=s)
+                for n, s in (("a", "ready"), ("b", "pending"), ("c", "failed"))]
+        for r in rows:
+            db.add(r)
+        db.commit()
+
+        assert core_repos.reconcile_interrupted(db) == 0
+        for r in rows:
+            db.refresh(r)
+        assert [r.kb_status for r in rows] == ["ready", "pending", "failed"]
+
+
+class TestRepoTableShowsIndexingProgress:
+    """A multi-minute clone and a dead job both rendered as the bare word
+    'indexing'. kb_progress/kb_step are written continuously by the ingest job —
+    the table just discarded them."""
+
+    def _render(self, rows):
+        from app.cli import render
+        from rich.console import Console
+
+        console = Console(width=200, no_color=True)
+        with console.capture() as cap:
+            console.print(render.repos(rows, None, theme.Glyphs(False)))
+        return cap.get()
+
+    def test_percentage_and_step_are_shown_while_indexing(self):
+        out = self._render([Repo(id=1, name="gitea", org="go-gitea", git_url="https://x/gitea",
+                                 key_prefix="G", kb_status="indexing", kb_progress=35,
+                                 kb_step="Analyzing structure (AST)…")])
+        assert "indexing 35%" in out
+        assert "Analyzing structure (AST)" in out
+
+    def test_a_settled_repo_gets_no_percentage_or_step_line(self):
+        out = self._render([Repo(id=1, name="rich", org="Textualize", git_url="https://x/rich",
+                                 key_prefix="R", kb_status="ready", kb_progress=100,
+                                 kb_step="done")])
+        assert "ready" in out
+        assert "100%" not in out
+        assert "done" not in out

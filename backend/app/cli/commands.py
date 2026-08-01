@@ -173,11 +173,18 @@ def cmd_kb(shell: Shell, args: str) -> None:
         if action == "views":
             repo = shell.ctx.ensure_repo(db)
             views = core_repos.knowledge(db, repo.id)
-            if not views:
+            # knowledge() returns the API envelope — {slug, total, labels, order,
+            # domains} — not a bare {domain: items} mapping. Walk `order` so the
+            # CLI groups them the same way the web Analysis screen does.
+            domains = (views or {}).get("domains") or {}
+            if not any(domains.values()):
                 shell.note("No structured knowledge generated for this repo yet.")
                 return
-            for domain, items in views.items():
-                shell.print(render.note(f"{domain}: {len(items)} entries", shell.g))
+            labels = views.get("labels") or {}
+            for domain in views.get("order") or sorted(domains):
+                items = domains.get(domain) or []
+                shell.print(render.note(
+                    f"{labels.get(domain, domain)}: {len(items)} entries", shell.g))
             return
 
         # status

@@ -16,6 +16,7 @@ the alternate screen.
 from __future__ import annotations
 
 import contextlib
+import os
 from collections.abc import Iterator
 
 from prompt_toolkit import PromptSession
@@ -222,7 +223,14 @@ class Shell:
                 self.print(render.note("interrupted", self.g, style="warn"))
             except Exception as err:  # noqa: BLE001 — a bad command must not end the session
                 self.print(render.error(f"{type(err).__name__}: {err}", self.g))
-                if cfg.log_level.upper() == "DEBUG":
+                # Read the toggle from the environment, not from Settings: this
+                # handler is the last thing standing between a buggy command and
+                # a lost session, so it must not depend on a config field that
+                # can go missing. It did — this line used to read a log-level
+                # setting that Settings never defined, and the AttributeError
+                # escaped the very handler it lived in, killing the shell and
+                # taking a running background KB ingest down with it.
+                if os.environ.get("CODEJURY_DEBUG"):
                     self.console.print_exception()
 
 

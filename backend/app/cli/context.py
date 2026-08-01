@@ -56,6 +56,7 @@ class Context:
         overrides to spread the default panel across providers that are
         actually configured.
         """
+        from ..core import repos as core_repos
         from ..services import judges, runtime_settings
         from ..services.auth import ensure_bootstrap_admin
 
@@ -64,6 +65,7 @@ class Context:
             ensure_bootstrap_admin(db)
             runtime_settings.apply_overrides(db)
             judges.ensure_seeded(db)
+            core_repos.reconcile_interrupted(db)
         self._load()
 
     @contextlib.contextmanager

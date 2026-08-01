@@ -106,6 +106,30 @@ def reindex(db: Session, repo_id: int) -> Repo:
     return repo
 
 
+def reconcile_interrupted(db: Session) -> int:
+    """Fail any repo left mid-index by a dead process. Called at startup.
+
+    Indexing runs on this process's thread pool, so nothing can still be
+    indexing when the process has only just come up: an ``indexing`` row at boot
+    is always the corpse of a run that was killed (crash, Ctrl-C, OOM). Left
+    alone it stays ``indexing`` forever, and `/kb` reports the ghost as live
+    work — which is indistinguishable from a real ingest and sends people
+    looking for a background job that isn't there. Stamping it failed with the
+    remedy in the message is the only honest reading of that state.
+    """
+    stuck = db.exec(select(Repo).where(Repo.kb_status == KBStatus.indexing.value)).all()
+    for repo in stuck:
+        repo.kb_status = KBStatus.failed.value
+        repo.kb_error = (f"Indexing was interrupted at {repo.kb_progress or 0}% "
+                         f"({repo.kb_step or 'unknown step'}) — /kb reindex to restart.")
+        repo.kb_step = "Interrupted — /kb reindex to restart"
+        db.add(repo)
+    if stuck:
+        db.commit()
+        logger.info("reconciled %d interrupted KB index run(s)", len(stuck))
+    return len(stuck)
+
+
 def delete(db: Session, repo_id: int) -> None:
     """Remove a repository and everything derived from it: sessions, messages,
     tasks, runs, logs, plus (best-effort) its workspace clone and knowledge dir."""

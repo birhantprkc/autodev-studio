@@ -8,6 +8,7 @@ from sqlmodel import Session
 
 from .config import settings
 from .core import CoreError
+from .core import repos as core_repos
 from .database import engine, init_db
 from .routers import (
     agents,
@@ -36,6 +37,9 @@ async def lifespan(app: FastAPI):
         # After the overrides, so the default panel can be spread across the
         # providers the operator has actually configured.
         judges.ensure_seeded(db)
+        # Nothing survives the process that ran it, so an `indexing` row here is
+        # a corpse, not live work. Same call the terminal client makes at boot.
+        core_repos.reconcile_interrupted(db)
     if settings.seed_on_startup:
         seed_demo_data()
     yield

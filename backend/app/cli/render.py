@@ -222,13 +222,26 @@ def repos(rows: list[Repo], active_id: int | None, g: theme.Glyphs) -> Renderabl
     table.add_column("URL", style=S("muted"), overflow="ellipsis")
 
     kb_styles = {"ready": "ok", "indexing": "running", "failed": "err"}
+    # Indexing writes kb_progress/kb_step continuously; a bare "indexing" throws
+    # that away and leaves a multi-minute clone+AST pass looking identical to a
+    # dead one. Show the number the job is already reporting.
     for r in rows:
         active = Text(g.step, style=S("brand")) if r.id == active_id else Text(" ")
         count = getattr(r, "kb_knowledge_count", 0) or 0
+        status = r.kb_status
+        if status == "indexing":
+            status = f"{status} {r.kb_progress or 0}%"
         table.add_row(active, f"{r.org}/{r.name}",
-                      Text(r.kb_status, style=S(kb_styles.get(r.kb_status, "muted"))),
+                      Text(status, style=S(kb_styles.get(r.kb_status, "muted"))),
                       f"{count:,}" if count else "—", r.git_url)
-    return Padding(table, (1, 0, 0, 2))
+
+    # The step is the half that says *what* it is doing — cloning a 1GB history
+    # and walking an AST look the same from a percentage alone.
+    steps = [r for r in rows if r.kb_status == "indexing" and r.kb_step]
+    body: list[RenderableType] = [table]
+    for r in steps:
+        body.append(Padding(Text(f"{r.org}/{r.name}: {r.kb_step}", style=S("muted")), (0, 0, 0, 3)))
+    return Padding(Group(*body) if len(body) > 1 else table, (1, 0, 0, 2))
 
 
 # ── Plan ──────────────────────────────────────────────────────────────────────
