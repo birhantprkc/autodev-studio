@@ -67,6 +67,35 @@ def _short(x, n: int = 160) -> str:
     return s[:n]
 
 
+# The CLI reports an exhausted plan by *answering* with it: exit 0, is_error
+# unset, and the quota notice as the result text. Nothing downstream can tell
+# that apart from a real reply, so it was stored as the agent's own words —
+# observed live, where "You've hit your session limit · resets 2:50am" became a
+# PM turn in the scope history and 34,466 tokens were billed for it.
+_QUOTA_MARKERS = (
+    "hit your session limit",
+    "usage limit reached",
+    "session limit reached",
+    "out of credits",
+    "insufficient credits",
+    "upgrade to increase your usage limit",
+)
+
+
+def quota_error(text: str) -> str:
+    """The plan-exhausted message hiding in a reply, or '' if there isn't one.
+
+    Deliberately narrow: it only fires on a SHORT reply, because a long answer
+    that happens to discuss rate limits is a real answer. A quota notice is
+    always terse — the CLI has nothing else to say.
+    """
+    body = (text or "").strip()
+    if not body or len(body) > 300:
+        return ""
+    low = body.lower()
+    return body if any(m in low for m in _QUOTA_MARKERS) else ""
+
+
 def chat(system: str, user: str = "", *, model: str | None = None, timeout: int = 180,
          json_mode: bool = False, messages: list[dict] | None = None) -> dict:
     """One pure-chat completion through the Claude Code CLI (host login — no API
@@ -172,6 +201,13 @@ def run_claude(cwd: str, prompt: str, on_event: Event, *, model: str | None = No
                 result["turns"] = ev.get("num_turns") or 0
                 if ev.get("is_error"):
                     result["error"] = result["text"] or "agent reported an error"
+                elif quota_error(result["text"]):
+                    # Not an answer — the plan is exhausted. Surface it as an
+                    # error so the caller abstains loudly instead of recording a
+                    # billing notice as the agent's opinion.
+                    result["error"] = f"Claude plan limit reached: {result['text'].strip()}"
+                    result["text"] = ""
+                    on_event("error", result["error"])
         proc.wait(timeout=60)
     except subprocess.TimeoutExpired:
         proc.kill()

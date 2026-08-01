@@ -72,6 +72,31 @@ def breakdown(db: Session, repo_id: int | None = None) -> dict:
         bucket["tokens_in"] += pt["tokens_in"]
         bucket["tokens_out"] += pt["tokens_out"]
 
+    # PM scoping is billed BEFORE any ticket exists, so it has no AgentRun to be
+    # found under — it accumulates on the session itself. Leaving it out made
+    # `/costs` disagree with the web overview (which does count it) and, worse,
+    # hid real spend: a clarify loop that asks three questions costs six figures
+    # of tokens and a scope that never got as far as tickets showed up nowhere at
+    # all. The clarify loop is the cheapest place to catch a wrong requirement,
+    # but only if what it costs is visible.
+    repo_sessions = {t.session_id for t in tasks if t.session_id}
+    for s in sess_by_id.values():
+        pm_in, pm_out = s.pm_tokens_input or 0, s.pm_tokens_output or 0
+        pm_cost = s.pm_cost_usd or 0.0
+        if not (pm_in or pm_out or pm_cost):
+            continue
+        # With a repo filter, only sessions that produced tickets for this repo
+        # can be attributed to it — a session carries no repo of its own.
+        if repo_id is not None and s.id not in repo_sessions:
+            continue
+        bucket = scopes.setdefault(s.id, {"session_id": s.id, "title": s.title or f"Scope #{s.id}",
+                                          "cost": 0.0, "tokens_in": 0, "tokens_out": 0, "tickets": []})
+        bucket["scoping"] = {"cost": round(pm_cost, 4), "tokens_in": pm_in, "tokens_out": pm_out,
+                             "tokens": pm_in + pm_out}
+        bucket["cost"] += pm_cost
+        bucket["tokens_in"] += pm_in
+        bucket["tokens_out"] += pm_out
+
     scope_list = sorted(scopes.values(), key=lambda s: s["cost"], reverse=True)
     if unscoped["tickets"]:
         scope_list.append(unscoped)

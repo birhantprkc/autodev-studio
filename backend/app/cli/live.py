@@ -154,7 +154,13 @@ class RunView:
         seconds = end - stage.started
         return f"{seconds:5.1f}s"
 
-    def renderable(self) -> RenderableType:
+    def log_line(self, severity: str, message: str) -> Text:
+        """One tail row, styled — shared by the live region and the scrollback
+        above it so a line looks the same wherever it is read."""
+        style = {"error": "err", "warn": "warn"}.get(severity, "muted")
+        return Text(f"  {self.g.vbar} ", style="rule") + Text(message[:400], style=style)
+
+    def renderable(self, *, include_tail: bool = True) -> RenderableType:
         self.tick += 1
 
         timeline = Table(box=None, pad_edge=False, show_header=False, padding=(0, 2, 0, 0))
@@ -187,12 +193,10 @@ class RunView:
 
         body: list[RenderableType] = [timeline]
 
-        if self.tail:
+        if include_tail and self.tail:
             body.append(Text(""))
             for severity, line in self.tail[-TAIL_LINES:]:
-                style = {"error": "err", "warn": "warn"}.get(severity, "muted")
-                body.append(Text(f"  {self.g.vbar} ", style="rule") +
-                            Text(line[:140], style=style))
+                body.append(self.log_line(severity, line[:140]))
 
         total = time.monotonic() - self.started
         footer = Text(f"{total:.0f}s elapsed", style="muted")
@@ -225,17 +229,37 @@ def watch(console: Console, g: theme.Glyphs, unicode: bool, work: threading.Thre
     with events.listener(_on_event):
         work.start()
         try:
-            with Live(view.renderable(), console=console, refresh_per_second=refresh_hz,
-                      transient=False) as live:
+            # The timeline is the only thing that redraws in place. Log lines are
+            # PRINTED above it instead, because a Live region repaints the same
+            # rows forever: everything that scrolled off was gone for good, and
+            # the tail only ever held the last 8 lines anyway. Printing puts them
+            # in the terminal's own scrollback, where they can be scrolled back
+            # to, selected and copied — which is what a run log is for.
+            with Live(view.renderable(include_tail=False), console=console,
+                      refresh_per_second=refresh_hz, transient=False) as live:
                 while work.is_alive() or not inbox.empty():
                     try:
                         kind, payload = inbox.get(timeout=1 / refresh_hz)
                         view.apply(kind, payload)
+                        if kind == "run.log":
+                            for line in _log_rows(payload):
+                                live.console.print(view.log_line(
+                                    payload.get("severity") or "info", line))
                     except queue.Empty:
                         pass
-                    live.update(view.renderable())
-                live.update(view.renderable())
+                    live.update(view.renderable(include_tail=False))
+                live.update(view.renderable(include_tail=False))
         except KeyboardInterrupt:
             detached = True
 
     return view, not detached
+
+
+def _log_rows(payload: dict) -> list[str]:
+    """The printable lines of one log event, matching what ``apply`` keeps.
+
+    Capped the same way, so the scrollback and the view never disagree about
+    what an agent said.
+    """
+    message = (payload.get("message") or "").strip()
+    return [ln.strip() for ln in message.splitlines()[:4] if ln.strip()] if message else []

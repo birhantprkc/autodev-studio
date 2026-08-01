@@ -232,6 +232,27 @@ def repos(rows: list[Repo], active_id: int | None, g: theme.Glyphs) -> Renderabl
 
 
 # ── Plan ──────────────────────────────────────────────────────────────────────
+def _plan_item_lines(item) -> list[str]:
+    """Readable lines for one blast-radius / test-plan entry.
+
+    The Planner is free-form JSON, so an entry may be a plain string or an
+    object like ``{"files": [...], "new_cases": [...]}``. Rendering it with
+    ``str()`` printed the raw Python dict — braces, quotes and all — into the
+    one view a human reads to decide whether the plan is worth approving.
+    """
+    if isinstance(item, dict):
+        lines: list[str] = []
+        for key, value in item.items():
+            if not value:
+                continue
+            joined = ", ".join(str(v) for v in value) if isinstance(value, list) else str(value)
+            lines.append(f"{str(key).replace('_', ' ')}: {joined}")
+        return lines or [str(item)]
+    if isinstance(item, list):
+        return [", ".join(str(v) for v in item)]
+    return [str(item)]
+
+
 def plan(plan_obj: dict, g: theme.Glyphs) -> RenderableType:
     """The Planner's verified implementation plan.
 
@@ -269,7 +290,8 @@ def plan(plan_obj: dict, g: theme.Glyphs) -> RenderableType:
             continue
         body.extend([Text(""), Text(label, style=S("heading"))])
         for item in (value if isinstance(value, list) else [value])[:8]:
-            body.append(Text(f"  {g.bullet} ", style=S("muted")) + Text(str(item), style=S("path")))
+            for line in _plan_item_lines(item):
+                body.append(Text(f"  {g.bullet} ", style=S("muted")) + Text(line, style=S("path")))
 
     return Padding(Group(*body), (1, 0, 0, 2))
 

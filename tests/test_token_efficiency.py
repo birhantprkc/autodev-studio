@@ -233,3 +233,73 @@ class TestDevTelemetry:
         events = []
         orchestrator._report_dev_efficiency({}, "--- a.py ---", lambda l, m: events.append((l, m)))
         assert events == []
+
+
+class TestQuotaRepliesAreNotAnswers:
+    """The CLI reports an exhausted plan by *answering* with it: exit 0, no
+    is_error, quota notice as the result text. It was stored as the agent's own
+    words — observed live, where a session-limit notice became a PM turn in the
+    scope history and 34,466 tokens were billed for it."""
+
+    def test_a_session_limit_notice_is_detected(self):
+        from app.services.claude_agent import quota_error
+
+        assert quota_error("You've hit your session limit · resets 2:50am (Asia/Kolkata)")
+        assert quota_error("Claude usage limit reached. Upgrade to increase your usage limit.")
+
+    def test_a_real_answer_mentioning_limits_is_not_flagged(self):
+        """A long reply that discusses rate limiting is a real reply."""
+        from app.services.claude_agent import quota_error
+
+        essay = ("The handler retries on 429s. Note the session limit reached path "
+                 "is distinct from the per-minute cap, and we surface it to callers. ") * 4
+        assert not quota_error(essay)
+        assert not quota_error("The diff looks correct; approving.")
+        assert not quota_error("")
+
+
+class TestScopingCostIsVisible:
+    """PM clarify turns are billed before any ticket exists, so they have no
+    AgentRun to be found under and `/costs` omitted them entirely — including
+    whole scopes that never reached tickets."""
+
+    def test_pm_scoping_tokens_appear_in_the_breakdown(self, db):
+        from app.core import costs
+        from app.models import ScopeSession
+
+        s = ScopeSession(repo_id=1, title="clarify-heavy scope", pm_tokens_input=100_000,
+                         pm_tokens_output=4_000, pm_cost_usd=0.42)
+        db.add(s)
+        db.commit()
+        out = costs.breakdown(db)
+        mine = [x for x in out["scopes"] if x["session_id"] == s.id]
+        assert mine, "a scope with only PM spend must still be reported"
+        assert mine[0]["scoping"]["tokens_in"] == 100_000
+        assert mine[0]["tokens_in"] >= 100_000
+        assert out["totals"]["cost"] >= 0.42
+
+    def test_a_scope_with_no_spend_is_not_invented(self, db):
+        from app.core import costs
+        from app.models import ScopeSession
+
+        s = ScopeSession(repo_id=1, title="untouched")
+        db.add(s)
+        db.commit()
+        assert not [x for x in costs.breakdown(db)["scopes"] if x["session_id"] == s.id]
+
+
+class TestPlanRendering:
+    def test_a_structured_test_plan_is_not_dumped_as_a_raw_dict(self):
+        from app.cli.render import _plan_item_lines
+
+        lines = _plan_item_lines({"files": ["tests/test_text.py"],
+                                  "new_cases": ["test_a", "test_b"]})
+        assert lines == ["files: tests/test_text.py", "new cases: test_a, test_b"]
+        assert not any("{" in ln or "'" in ln for ln in lines)
+
+    def test_plain_strings_and_lists_still_render(self):
+        from app.cli.render import _plan_item_lines
+
+        assert _plan_item_lines("rich/style.py") == ["rich/style.py"]
+        assert _plan_item_lines(["a", "b"]) == ["a, b"]
+        assert _plan_item_lines({}) == ["{}"]
