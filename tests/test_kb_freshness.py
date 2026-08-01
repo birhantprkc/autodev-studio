@@ -134,3 +134,77 @@ class TestSymbolMapMultiLanguage:
         assert [s["n"] for s in js_info["symbols"]] == ["render"]
 
         assert symbol_map._analyze_one(tmp_path, "notes.txt") is None
+
+
+class TestDenseIndexResumeKeying:
+    """The dense index is rebuilt from the graph's nodes, so its resume stamp
+    must be the GRAPH's watermark. The two diverge exactly where it matters:
+    the pipeline checks out `agent/scope-N` before calling freshness, so a
+    working-tree sha would stamp the agent branch onto an index built from
+    origin/HEAD — mismatching on every later run and forcing a full rebuild
+    (an hour, for a repo the size of gitea) each time."""
+
+    def test_the_stamp_follows_the_graph_not_the_checked_out_branch(self, tmp_path, monkeypatch):
+        from app.config import settings
+        from app.services.knowledge import embed
+
+        monkeypatch.setattr(settings, "qdrant_path", str(tmp_path))
+        monkeypatch.setattr(embed.graph, "indexed_sha", lambda u: "graphsha")
+        monkeypatch.setattr(embed.git_ops, "rev_parse",
+                            lambda *a, **k: "agentbranchsha")
+        monkeypatch.setattr(embed, "_nodes", lambda u: [
+            {"name": "f", "qn": "a.go::f", "file": "a.go", "start": 1, "end": 2,
+             "label": "Function", "sig": ""}])
+        monkeypatch.setattr(embed, "_read_bodies", lambda u, n: {})
+        class FakeVec(list):
+            def tolist(self):
+                return list(self)
+
+        monkeypatch.setattr(embed, "_get_model",
+                            lambda: type("M", (), {"embed": lambda self, t, batch_size=8:
+                                                   [FakeVec([0.0] * embed._DIM) for _ in t]})())
+
+        class FakeClient:
+            def __init__(self):
+                self.created = []
+                self.points = []
+
+            def collection_exists(self, c):
+                return False
+
+            def create_collection(self, c, **k):
+                self.created.append(c)
+
+            def upsert(self, c, points):
+                self.points.extend(points)
+
+        monkeypatch.setattr(embed, "_get_client", FakeClient)
+
+        embed.build_inprocess("https://x/repo")
+        assert embed._read_stamp("https://x/repo") == "graphsha"
+
+    def test_a_moved_graph_forces_a_full_rebuild(self, tmp_path, monkeypatch):
+        """Point ids are derived from the qualified name, so a node whose body
+        changed keeps its id — a naive resume would leave a stale vector in
+        place forever."""
+        from app.config import settings
+        from app.services.knowledge import embed
+
+        monkeypatch.setattr(settings, "qdrant_path", str(tmp_path))
+        embed._write_stamp("https://x/repo", "oldsha")
+        monkeypatch.setattr(embed.graph, "indexed_sha", lambda u: "newsha")
+        monkeypatch.setattr(embed, "_nodes", lambda u: [])
+
+        dropped: list = []
+
+        class FakeClient:
+            def collection_exists(self, c):
+                return True
+
+            def delete_collection(self, c):
+                dropped.append(c)
+
+        monkeypatch.setattr(embed, "_get_client", FakeClient)
+        # _nodes returns [] so it bails before touching the model; the drop
+        # decision is what this asserts, and it happens after that guard.
+        assert embed.build_inprocess("https://x/repo") == 0

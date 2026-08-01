@@ -276,7 +276,7 @@ def _read_bodies(repo_url: str, nodes: list[dict]) -> dict[str, str]:
 
 # --- Build (runs in a subprocess) ---------------------------------------------
 
-def build(repo_url: str, on_progress=None) -> int:
+def build(repo_url: str, on_progress=None, resume: bool = True) -> int:
     """(Re)build the dense index for a repo, in a SUBPROCESS so the model's
     memory is fully reclaimed when it finishes. Returns the vector count
     (0 on failure/unavailable). Never raises.
@@ -294,9 +294,12 @@ def build(repo_url: str, on_progress=None) -> int:
     env = {**os.environ, "OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1",
            "OPENBLAS_NUM_THREADS": "1"}
     vectors, deadline = 0, time.monotonic() + _BUILD_TIMEOUT
+    argv = [sys.executable, "-m", "app.services.knowledge.embed", repo_url]
+    if not resume:
+        argv.append("--fresh")
     try:
         proc = subprocess.Popen(
-            [sys.executable, "-m", "app.services.knowledge.embed", repo_url],
+            argv,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             errors="replace", env=env,
             cwd=str(Path(__file__).resolve().parents[3]),  # backend/
@@ -334,26 +337,92 @@ def build(repo_url: str, on_progress=None) -> int:
     return 0
 
 
-def build_inprocess(repo_url: str, progress=None) -> int:
-    """The actual build. Runs in the subprocess spawned by `build()`."""
+def _stamp_path(repo_url: str) -> Path:
+    return Path(settings.qdrant_path).resolve() / f"{_collection(repo_url)}.sha"
+
+
+def _read_stamp(repo_url: str) -> str:
+    try:
+        return _stamp_path(repo_url).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def _write_stamp(repo_url: str, sha: str) -> None:
+    with contextlib.suppress(OSError):
+        _stamp_path(repo_url).write_text(sha, encoding="utf-8")
+
+
+def _existing_ids(client, coll: str) -> set:
+    """Point ids already in the collection, so a resumed build can skip them."""
+    found, offset = set(), None
+    while True:
+        points, offset = client.scroll(coll, limit=4096, offset=offset,
+                                       with_payload=False, with_vectors=False)
+        found.update(p.id for p in points)
+        if offset is None:
+            break
+    return found
+
+
+def build_inprocess(repo_url: str, progress=None, resume: bool = True) -> int:
+    """The actual build. Runs in the subprocess spawned by `build()`.
+
+    Resumable, because this is an hour of CPU on a laptop and losing all of it
+    to a closed lid is not an acceptable failure mode — a power cut at 9,600 of
+    gitea's 15,991 nodes cost the whole run once already.
+
+    Resume is only safe while the repo has not moved: `_point_id` is derived
+    from the qualified name, so a node whose *body* changed keeps its id and a
+    naive skip would leave a stale vector in place forever. The commit sha is
+    stamped beside the collection and a mismatch forces a full rebuild.
+    """
     from qdrant_client import models as qm
 
     nodes = _nodes(repo_url)
     if not nodes:
         return 0
-    bodies = _read_bodies(repo_url, nodes)
     client = _get_client()
     coll = _collection(repo_url)
-    if client.collection_exists(coll):
-        client.delete_collection(coll)
-    client.create_collection(
-        coll,
-        vectors_config=qm.VectorParams(size=_DIM, distance=qm.Distance.COSINE,
-                                       on_disk=True),
-        on_disk_payload=True)
 
+    # Key the stamp to the GRAPH's watermark, not the working tree. These
+    # vectors are built from the graph's nodes, and the two diverge exactly when
+    # it matters: the pipeline checks out `agent/scope-N` before calling
+    # freshness, so a working-tree sha here would stamp the agent branch onto an
+    # index built from origin/HEAD — mismatching on every subsequent run and
+    # forcing an hour-long rebuild each time.
+    sha = ""
+    with contextlib.suppress(Exception):
+        sha = graph.indexed_sha(repo_url) or ""
+
+    done_ids: set = set()
+    fresh = True
+    if client.collection_exists(coll):
+        stamped = _read_stamp(repo_url)
+        if resume and sha and stamped == sha:
+            done_ids = _existing_ids(client, coll)
+            fresh = False
+            logger.info("knowledge.embed: resuming at %d/%d nodes for %s",
+                        len(done_ids), len(nodes), repo_url)
+        else:
+            # Either the repo moved or we were told to start over. Stale vectors
+            # keyed by an unchanged qualified name would otherwise survive.
+            client.delete_collection(coll)
+    if fresh:
+        client.create_collection(
+            coll,
+            vectors_config=qm.VectorParams(size=_DIM, distance=qm.Distance.COSINE,
+                                           on_disk=True),
+            on_disk_payload=True)
+        _write_stamp(repo_url, sha)
+
+    todo = [n for n in nodes if _point_id(n["qn"]) not in done_ids]
+    if not todo:
+        return len(done_ids)
+
+    bodies = _read_bodies(repo_url, todo)
     model = _get_model()
-    total = 0
+    total = len(done_ids)
     pending: list = []
 
     def flush() -> None:
@@ -361,8 +430,8 @@ def build_inprocess(repo_url: str, progress=None) -> int:
             client.upsert(coll, points=pending)
             pending.clear()
 
-    for i in range(0, len(nodes), _BATCH):
-        batch = nodes[i:i + _BATCH]
+    for i in range(0, len(todo), _BATCH):
+        batch = todo[i:i + _BATCH]
         texts = [_doc_text(n, bodies.get(n["qn"], "")) for n in batch]
         vecs = [v.tolist() for v in model.embed(texts, batch_size=_BATCH)]
         pending.extend(
@@ -377,6 +446,8 @@ def build_inprocess(repo_url: str, progress=None) -> int:
             if progress:
                 progress(total, len(nodes))
     flush()
+    if progress:
+        progress(total, len(nodes))
     return total
 
 
@@ -423,7 +494,9 @@ def delete(repo_url: str) -> None:
 
 if __name__ == "__main__":  # subprocess entrypoint (see build())
     _limit_threads()
-    url = sys.argv[1] if len(sys.argv) > 1 else ""
+    args = sys.argv[1:]
+    url = next((a for a in args if not a.startswith("--")), "")
+    resume = "--fresh" not in args
 
     def _emit(done: int, total: int) -> None:
         # The parent's only window into a 20-minute stage. Unbuffered, or it
@@ -431,7 +504,7 @@ if __name__ == "__main__":  # subprocess entrypoint (see build())
         print(f"PROGRESS={done}/{total}", flush=True)
 
     try:
-        count = build_inprocess(url, progress=_emit)
+        count = build_inprocess(url, progress=_emit, resume=resume)
     except Exception as exc:  # noqa: BLE001
         print(f"ERROR={exc}", file=sys.stderr)
         count = 0
