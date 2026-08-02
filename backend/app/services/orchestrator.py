@@ -451,6 +451,27 @@ def _dev_agent(path: str, key: str, info: dict, on_event, context: str = "",
              "cost": cr["cost"], "error": cr["error"]}, providers.label(fb_provider, fb_model))
 
 
+def _test_outcome(passed: bool | None, output: str) -> str:
+    """How the suite ended, in the log line a human actually reads.
+
+    `passed is None` covers three very different situations that all used to
+    print "no suite/deps": the repo genuinely has no tests, the runner could not
+    start, and the suite ran but exceeded its timeout. On gitea the third is the
+    common one — `go test ./...` compiles 3,024 files — and calling that "no
+    suite" invites the exact wrong conclusion, that QA had nothing to check.
+    """
+    if passed is True:
+        return "passed"
+    if passed is False:
+        return "failures"
+    low = (output or "").lower()
+    if "timeoutexpired" in low or "timed out" in low:
+        return "TIMED OUT (suite exists — QA has no signal from it)"
+    if "could not run tests" in low:
+        return "could not run (see log — QA has no signal from it)"
+    return "no suite/deps"
+
+
 def _should_stop_after_dev(res: dict, committed: bool) -> bool:
     """Whether a Dev result must halt the scope before QA.
 
@@ -1038,7 +1059,7 @@ def _run_scope_locked_impl(session_id: int) -> None:
             test_out = banner + test_out
             passed = not new_fail  # no NEW failures ⇒ green for this change
         agent_runner.log(rid, "success" if passed else ("warn" if passed is None else "error"),
-                         f"Tests: {'passed' if passed else ('no suite/deps' if passed is None else 'failures')}")
+                         f"Tests: {_test_outcome(passed, test_out)}")
         # Fast path: the triaged-trivial change verified through the deterministic
         # gate (suite ran, zero new failures) and the diff is as small as triaged
         # — skip the paid LLM QA + Review passes with explicit verdicts stamped.

@@ -137,3 +137,38 @@ class TestDevFailureStopsTheScope:
         from app.services import orchestrator
 
         assert not orchestrator._should_stop_after_dev({"error": ""}, committed=False)
+
+
+class TestTestOutcomeIsHonest:
+    """`passed is None` covered three different situations that all printed
+    "no suite/deps": no tests exist, the runner could not start, and the suite
+    ran but timed out. On gitea the third is the common one — `go test ./...`
+    compiles 3,024 files against a 600s limit — and calling it "no suite"
+    invites the wrong conclusion, that there was nothing for QA to check."""
+
+    def test_a_timeout_is_not_reported_as_a_missing_suite(self):
+        from app.services import orchestrator
+
+        out = orchestrator._test_outcome(
+            None, "Could not run tests: Command '['go', 'test', './...']' "
+                  "timed out after 600 seconds")
+        assert "TIMED OUT" in out
+        assert "no suite" not in out
+
+    def test_a_genuinely_absent_suite_still_says_so(self):
+        from app.services import orchestrator
+
+        assert orchestrator._test_outcome(None, "No recognized test suite found.") \
+            == "no suite/deps"
+
+    def test_pass_and_fail_are_unchanged(self):
+        from app.services import orchestrator
+
+        assert orchestrator._test_outcome(True, "ok") == "passed"
+        assert orchestrator._test_outcome(False, "--- FAIL: TestX") == "failures"
+
+    def test_a_runner_that_could_not_start_is_distinguished(self):
+        from app.services import orchestrator
+
+        out = orchestrator._test_outcome(None, "Could not run tests: [Errno 2] no go")
+        assert "could not run" in out and "no suite" not in out
