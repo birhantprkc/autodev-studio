@@ -744,12 +744,12 @@ def detect_runner(root: Path) -> Runner | None:
     reported INCONCLUSIVE for every delivery. So the Python branch also
     requires Python source to actually exist.
     """
-    if ((root / "pyproject.toml").exists() or (root / "setup.py").exists()
+    if (((root / "pyproject.toml").exists() or (root / "setup.py").exists()
             or (root / "setup.cfg").exists() or (root / "pytest.ini").exists()
             or (root / "tox.ini").exists() or list(root.glob("test_*.py"))
-            or ((root / "tests").exists() and _dir_has(root, "*.py"))):
-        if _has_source(root, ".py"):
-            return _PYTEST
+            or ((root / "tests").exists() and _dir_has(root, "*.py")))
+            and _has_source(root, ".py")):
+        return _PYTEST
     if (root / "go.mod").exists() and shutil.which("go"):
         return _GO
     if (root / "Cargo.toml").exists() and shutil.which("cargo"):
@@ -800,7 +800,7 @@ def _has_source(root: Path, ext: str, limit: int = 4000) -> bool:
     otherwise vouch for an ecosystem the repo doesn't use. Bounded: this runs on
     the QA path, and one hit is all the answer needs."""
     seen = 0
-    for current, dirs, files in os.walk(root):
+    for _current, dirs, files in os.walk(root):
         dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
         for name in files:
             if name.endswith(ext):

@@ -318,7 +318,7 @@ class TestPromptIsCacheable:
         planner.plan("repo", str(repo), {"summary": "x"})
 
         assert len(prefixes) == 3
-        for earlier, later in zip(prefixes, prefixes[1:]):
+        for earlier, later in zip(prefixes, prefixes[1:], strict=False):
             assert later.startswith(earlier), "a round's prefix must extend the last"
 
 

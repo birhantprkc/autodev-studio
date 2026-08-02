@@ -374,6 +374,22 @@ def build(repo_url: str, on_progress=None, resume: bool = True) -> int:
     return 0
 
 
+def _index_sha(repo_url: str) -> str:
+    """The commit this dense index belongs to: the GRAPH's watermark, never the
+    working tree's HEAD.
+
+    These vectors are built from the graph's nodes, and the two diverge exactly
+    where it matters — the pipeline checks out `agent/scope-N` before calling
+    freshness, so a working-tree sha would stamp the agent branch onto an index
+    built from origin/HEAD, mismatching on every later run and paying for a full
+    rebuild each time. Split out from the build so the choice can be tested
+    without the optional Qdrant stack installed.
+    """
+    with contextlib.suppress(Exception):
+        return graph.indexed_sha(repo_url) or ""
+    return ""
+
+
 def _stamp_path(repo_url: str) -> Path:
     return Path(settings.qdrant_path).resolve() / f"{_collection(repo_url)}.sha"
 
@@ -466,15 +482,7 @@ def build_inprocess(repo_url: str, progress=None, resume: bool = True) -> int:
     client = _get_client()
     coll = _collection(repo_url)
 
-    # Key the stamp to the GRAPH's watermark, not the working tree. These
-    # vectors are built from the graph's nodes, and the two diverge exactly when
-    # it matters: the pipeline checks out `agent/scope-N` before calling
-    # freshness, so a working-tree sha here would stamp the agent branch onto an
-    # index built from origin/HEAD — mismatching on every subsequent run and
-    # forcing an hour-long rebuild each time.
-    sha = ""
-    with contextlib.suppress(Exception):
-        sha = graph.indexed_sha(repo_url) or ""
+    sha = _index_sha(repo_url)
 
     done_ids: set = set()
     fresh = True

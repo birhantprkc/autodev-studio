@@ -16,6 +16,7 @@ stale at the localization fallback tier.
 
 from __future__ import annotations
 
+import pytest
 from app.config import settings
 from app.services.knowledge import freshness, store, symbol_map
 from app.services.knowledge.facts import KnowledgeDocument
@@ -142,20 +143,45 @@ class TestDenseIndexResumeKeying:
     the pipeline checks out `agent/scope-N` before calling freshness, so a
     working-tree sha would stamp the agent branch onto an index built from
     origin/HEAD — mismatching on every later run and forcing a full rebuild
-    (an hour, for a repo the size of gitea) each time."""
+    (an hour, for a repo the size of gitea) each time.
 
-    def test_the_stamp_follows_the_graph_not_the_checked_out_branch(self, tmp_path, monkeypatch):
+    The choice lives in `_index_sha` so it is testable on a core-only install;
+    the end-to-end path needs Qdrant and is skipped where that is absent, the
+    same split the download-capture tests use.
+    """
+
+    def test_the_stamp_follows_the_graph_not_the_checked_out_branch(self, monkeypatch):
+        from app.services.knowledge import embed
+
+        monkeypatch.setattr(embed.graph, "indexed_sha", lambda u: "graphsha")
+        monkeypatch.setattr(embed.git_ops, "rev_parse", lambda *a, **k: "agentbranchsha")
+        assert embed._index_sha("https://x/repo") == "graphsha"
+
+    def test_an_unreadable_watermark_is_empty_not_an_exception(self, monkeypatch):
+        """An empty sha disables resume (every build is fresh) — correct, and
+        never a crash inside the build subprocess."""
+        from app.services.knowledge import embed
+
+        def boom(_u):
+            raise OSError("no graph dir")
+
+        monkeypatch.setattr(embed.graph, "indexed_sha", boom)
+        assert embed._index_sha("https://x/repo") == ""
+
+    def test_the_build_stamps_what_index_sha_returned(self, tmp_path, monkeypatch):
+        """Faithful end-to-end version — needs the optional Qdrant stack."""
+        pytest.importorskip("qdrant_client",
+                            reason="qdrant ships with the [semantic] extra")
         from app.config import settings
         from app.services.knowledge import embed
 
         monkeypatch.setattr(settings, "qdrant_path", str(tmp_path))
-        monkeypatch.setattr(embed.graph, "indexed_sha", lambda u: "graphsha")
-        monkeypatch.setattr(embed.git_ops, "rev_parse",
-                            lambda *a, **k: "agentbranchsha")
+        monkeypatch.setattr(embed, "_index_sha", lambda u: "graphsha")
         monkeypatch.setattr(embed, "_nodes", lambda u: [
             {"name": "f", "qn": "a.go::f", "file": "a.go", "start": 1, "end": 2,
              "label": "Function", "sig": ""}])
         monkeypatch.setattr(embed, "_read_bodies", lambda u, n: {})
+
         class FakeVec(list):
             def tolist(self):
                 return list(self)
@@ -165,21 +191,16 @@ class TestDenseIndexResumeKeying:
                                                    [FakeVec([0.0] * embed._DIM) for _ in t]})())
 
         class FakeClient:
-            def __init__(self):
-                self.created = []
-                self.points = []
-
             def collection_exists(self, c):
                 return False
 
             def create_collection(self, c, **k):
-                self.created.append(c)
+                pass
 
             def upsert(self, c, points):
-                self.points.extend(points)
+                pass
 
         monkeypatch.setattr(embed, "_get_client", FakeClient)
-
         embed.build_inprocess("https://x/repo")
         assert embed._read_stamp("https://x/repo") == "graphsha"
 
@@ -187,12 +208,14 @@ class TestDenseIndexResumeKeying:
         """Point ids are derived from the qualified name, so a node whose body
         changed keeps its id — a naive resume would leave a stale vector in
         place forever."""
+        pytest.importorskip("qdrant_client",
+                            reason="qdrant ships with the [semantic] extra")
         from app.config import settings
         from app.services.knowledge import embed
 
         monkeypatch.setattr(settings, "qdrant_path", str(tmp_path))
         embed._write_stamp("https://x/repo", "oldsha")
-        monkeypatch.setattr(embed.graph, "indexed_sha", lambda u: "newsha")
+        monkeypatch.setattr(embed, "_index_sha", lambda u: "newsha")
         monkeypatch.setattr(embed, "_nodes", lambda u: [])
 
         dropped: list = []
@@ -205,6 +228,4 @@ class TestDenseIndexResumeKeying:
                 dropped.append(c)
 
         monkeypatch.setattr(embed, "_get_client", FakeClient)
-        # _nodes returns [] so it bails before touching the model; the drop
-        # decision is what this asserts, and it happens after that guard.
         assert embed.build_inprocess("https://x/repo") == 0
