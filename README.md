@@ -2,11 +2,12 @@
 
 <img src="docs/screenshots/cli-session.gif" alt="CodeJury — a recorded session in the terminal: the PM agent scoping a change, then the pipeline streaming Planner → Dev → QA → jury" width="900">
 
-<sub>A real session against <a href="https://github.com/Textualize/rich">Textualize/rich</a>,
-recorded and cut to twenty seconds: describe a bug in plain English, the PM agent
-interrogates the requirement until it can lock it, then Planner → Dev → QA → jury
-streams live with per-stage model, time and cost. Nothing here is a mockup — the
-run took 13 minutes and $1.72, and shipped ticket R-111.</sub>
+<sub>A real session against <a href="https://github.com/Textualize/rich">Textualize/rich</a>:
+describe a bug in plain English, the PM agent interrogates the requirement until it
+can lock it, then Planner → Dev → QA → jury runs with per-stage model, time and
+cost. Nothing here is a mockup — the run took 13 minutes and $1.49, and shipped
+ticket R-111 on a unanimous jury verdict. Thirteen minutes does not fit in a
+README, so the recording is nine moments from it, each held long enough to read.</sub>
 
 <br>
 
