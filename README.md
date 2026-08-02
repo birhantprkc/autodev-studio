@@ -327,11 +327,40 @@ persists on disk and re-syncs as the repo moves:
   it *learned*: files touched, symbols added, gotchas, wiring. Run #50 starts
   from what runs #1–49 proved.
 
+### Any language, and more than one at a time
+
+Nothing in the pipeline is Python-shaped. The code graph parses **158 languages**
+through bundled tree-sitter grammars, and every language-specific decision —
+symbol extraction, import parsing, the edit-time syntax gate, what counts as a
+test file, which test runner to use — lives in one registry that dispatches on
+file type. Add a language by teaching that registry, not by touching the
+pipeline.
+
+That matters most on repos that are not one language. A real example: a
+**6,174-file Go + TypeScript + Vue monorepo** indexes to 120,521 graph nodes and
+15,991 embedded symbols, and a plain-English question reaches both halves of it —
+*"issue dependency search"* returns the Go model, *"dependency dropdown
+candidates"* returns the TypeScript component, from the same query interface. A
+change that starts in a template and ends in a backend handler is one lookup, not
+two investigations.
+
+Two rules keep this honest rather than aspirational:
+
+- **Fail open, never fail wrong.** An unrecognised language still gets its files
+  indexed, its edits applied, and its tests reported as *couldn't run* — never as
+  passing. Degraded retrieval is a worse answer; a fabricated green is a wrong
+  one.
+- **A manifest is not an ecosystem.** Polyglot repos carry manifests for their
+  *tooling* — gitea ships a `pyproject.toml` whose entire contents pin three
+  Python linters, against zero `.py` files and 3,024 `.go` files. Detection
+  requires the source to actually be there, or QA runs the wrong suite and
+  reports nothing useful.
+
 ### What that buys, measured
 
 Head-to-head against plain Claude Code, identical plain-English request to both,
-on the two largest repos tested — Textualize/rich (~35.6k LOC) and
-Textualize/textual (~82.5k LOC):
+on the two largest repos **benchmarked** — Textualize/rich (~35.6k LOC) and
+Textualize/textual (~82.5k LOC). Every number below was measured end to end.
 
 | Repo | Task | CodeJury | Cold `claude -p` | Δ |
 |---|---|---:|---:|---:|
@@ -451,36 +480,43 @@ codejury doctor          # or /doctor in the shell, or ./run.sh doctor
 ```
 
 ```
-  Preflight
-
-    Environment
-    ✓  python           3.12.3
-    ✓  git              git version 2.43.0
-    ✓  ripgrep          ripgrep 15.2.0
-    ✓  gh (GitHub CLI)  gh version 2.96.0
-
-    Knowledge base
-    ✓  code graph (codebase-memory-mcp)      codebase-memory-mcp 0.9.0
-    ✓  semantic search (fastembed + qdrant)  installed
-    ✓  tree-sitter extractors                installed
-
-    Pipeline stages
-    ✓  stage: knowledge  claude-cli / haiku
-    ✓  stage: planner    gemini / gemini-3.5-flash-lite
-    ✓  stage: dev        claude-cli / sonnet
-    ✓  stage: review     claude-cli / haiku
-
-    Coding CLIs detected
-    ✓  claude-code  2.1.220 (Claude Code)
-    ✓  codex        codex-cli 0.145.0
-    ✗  cursor       'cursor-agent' not found on PATH
-        • cursor: Install the Cursor CLI (cursor-agent), then run
-          `cursor-agent login` — or set a Cursor API key on the Providers tab.
-
-    Delivery
-    ✓  demo mode  on — the PR stage is a dry run
-
-  ✓ Ready to run.  2 optional component(s) degraded — see above.
+  ╭─  Preflight  ──────────────────────────────────────────────────────────────────╮
+  │                                                                                │
+  │  Environment                                                                   │
+  │    ✓  python           3.12.3                                                  │
+  │    ✓  git              git version 2.43.0                                      │
+  │    ✓  ripgrep          ripgrep 15.2.0                                          │
+  │    ✓  gh (GitHub CLI)  gh version 2.96.0                                       │
+  │                                                                                │
+  │  Knowledge base                                                                │
+  │    ✓  code graph (codebase-memory-mcp)      codebase-memory-mcp 0.9.0          │
+  │    ✓  semantic search (fastembed + qdrant)  installed                          │
+  │    ✓  tree-sitter extractors                installed                          │
+  │                                                                                │
+  │  Pipeline stages                                                               │
+  │    ✓  stage: knowledge  claude-cli / haiku                                     │
+  │    ✓  stage: pm         claude-cli / haiku                                     │
+  │    ✓  stage: planner    claude-cli / sonnet                                    │
+  │    ✓  stage: dev        claude-cli / sonnet                                    │
+  │    ✓  stage: qa         claude-cli / haiku                                     │
+  │    ✓  stage: review     claude-cli / haiku                                     │
+  │                                                                                │
+  │  Coding CLIs detected                                                          │
+  │    ✓  claude-code  2.1.220 (Claude Code)                                       │
+  │    ✓  codex        codex-cli 0.145.0                                           │
+  │    ✗  cursor       'cursor-agent' not found on PATH                            │
+  │    ✓  aider        aider 0.86.2                                                │
+  │    ✓  gemini-cli   0.52.0                                                      │
+  │      • cursor: Install the Cursor CLI (cursor-agent), then run `cursor-agent   │
+  │      login` — or set a Cursor API key on the Providers tab.                    │
+  │                                                                                │
+  │  Delivery                                                                      │
+  │    ✓  demo mode  on — the PR stage is a dry run                                │
+  │    ✓  jira       not configured (optional — pushes are a no-op)                │
+  │                                                                                │
+  │  ✓ Ready to run.  2 optional component(s) degraded — see above.                │
+  │                                                                                │
+  ╰──────────────────────────────────────────────────────────────────────  ready  ─╯
 ```
 
 Every dependency in CodeJury is optional in a *different* way — some degrade
@@ -507,13 +543,14 @@ add a --dry-run flag to the CLI runner       # 2. plain English; the PM agent sc
 | | |
 |---|---|
 | `/doctor` | Preflight — what's installed, what's degraded, what blocks a run. |
-| `/kb add <url>` | Index a repository: code graph, embeddings, structured views. |
-| `/run` | The pipeline, streamed as a stage timeline with per-stage model, elapsed time and cost. **Ctrl-C detaches the view; the run keeps going.** |
+| `/kb add <url>` | Index a repository: code graph, embeddings, structured views — rendered live, with the percentage and the stage it is actually in (cloning, AST, embedding *n*/*m*). Ctrl-C detaches; the build keeps going. |
+| `/run` | The pipeline, streamed as a stage timeline with per-stage model, elapsed time, cost and live tool-call count — plus a rolling window of what the running agent is doing *right now*. **Ctrl-C detaches the view; the run keeps going.** |
 | `/review` | The jury panel — the foreperson's verdict, every juror's own findings (including abstentions), the diff, and the Planner's plan to read it against. |
 | `/jury` | The roster — seat, unseat, reorder, re-model, re-brief. See §2. |
 | `/models` · `/model` | Who owns each of the six stages, and whether the CLI it points at is installed here. See §2. |
 | `/settings` | Everything configurable: providers and keys, per-stage models, one-provider presets, loop bounds, delivery safety, Jira. |
 | `/costs` | Real token and dollar breakdowns per ticket, scope and agent — read from each backend's own meter. |
+| `/show <KEY>` | One ticket in full. Criteria the PM **assumed** rather than heard are counted and flagged — the last place to catch a drifted requirement before it costs money. |
 
 **Everything the shell does is also a subcommand**, so it drops into a Makefile
 or a CI job unchanged:
@@ -579,16 +616,19 @@ header. Hand-rolled design system, zero CDN, dark
 | | |
 |---|---|
 | **Multi-judge review jury** | The review stage is a **panel**, not a reviewer — independent, specialized, differently-modelled judges plus a synthesizing foreperson. See §1. |
+| **Requirement-drift check** | Jurors *and* the foreperson see the user's verbatim request beside the PM's criteria, and drift between the two blocks. A panel judging only the criteria cannot notice the criteria were wrong — every juror checks the same paraphrase and agrees with itself. This is the one finding a single juror can carry alone. |
 | **Per-stage provider *and* model** | All six stages independently repointable at 5 headless coding CLIs (on their own login, no key) or any API model — the Anthropic Messages API and any OpenAI-compatible endpoint. One-click install for a missing CLI. See §2. |
 | **Repo code graph** | A persistent knowledge graph — definitions, call edges, imports, HTTP routes across 158 languages — via the external [`codebase-memory-mcp`](https://github.com/DeusData/codebase-memory-mcp) binary. Exact `file:line` lookups and call-graph impact analysis, deterministic and free. Degrades to a symbol map + `ripgrep`. |
 | **Hybrid semantic search** | Graph nodes embedded locally (fastembed + embedded Qdrant) and RRF-fused with BM25. **8/10 vs 4/10** top-5 recall against keyword-only on vocabulary-mismatch queries. |
+| **Incremental re-index** | The graph reindexes on SHA drift; the dense index re-embeds only the nodes in files the diff touched, keeping the rest. A merge that touches four files costs seconds, not the hour a full rebuild takes on a large repo — and the build is resumable, so a crash costs minutes rather than everything. |
 | **Compounding delivery memory** | Each shipped scope records what it learned — files, symbols, gotchas, wiring — and those notes rank into future scoping. Unmerged work is flagged and upgraded once it lands. |
 | **Agentic PM scoping** | A PM agent runs a Socratic clarify-loop hunting ambiguity before locking a scope, then drafts concrete engineering tickets. It owns the requirement, not the code. |
 | **Planner agent** | Before any code is written, a separate agent reads the repo through the graph and decides *how* the change is made — ordered steps, blast radius, which tests to extend. Every symbol it names is deterministically verified against the graph and ripgrep, so Dev starts from checked locations, not a guess. |
 | **Human approval gate** | No agent touches code until a human approves the ticket (optionally pushed to Jira). |
 | **Dev → QA → Review → PR** | Runs on an isolated branch of a cloned working copy; opens a real PR via `gh`. |
-| **Bounded revise loop** | QA/jury feedback returns to Dev for up to N rounds, with deliberately conservative verdict parsing — an errored agent is `INCONCLUSIVE`, never silently a pass. |
-| **Language-agnostic** | Symbol extraction, edit-time syntax gates and test running all dispatch through one language registry — Python (exact `ast`), JS/TS, Go, Rust, Java, Ruby. Unsupported languages fail open rather than breaking the run. |
+| **Bounded revise loop** | QA/jury feedback returns to Dev for up to N rounds, with deliberately conservative verdict parsing — an errored agent is `INCONCLUSIVE`, never silently a pass. A Dev that fails stops the scope even if it committed something first: a truncated edit set is indistinguishable from a finished one in a diff. |
+| **No silent green** | QA sees a diff and the test output, so "no failures" and "the suite never ran" look identical. A suite that times out or is missing is announced as such, and the stored verdict is stamped `NO TEST SIGNAL` — it reaches the board, the PR body and the knowledge write-back saying it was never verified. |
+| **Language-agnostic** | Symbol extraction, edit-time syntax gates and test running all dispatch through one language registry — Python (exact `ast`), JS/TS, Go, Rust, Java, Ruby. Unsupported languages fail open rather than breaking the run. A manifest alone does not decide the ecosystem: polyglot repos carry them for *tooling* (gitea ships a `pyproject.toml` pinning three Python linters and zero `.py` files), so the source has to be there too. |
 | **Trivial fast path** | Deterministic triage skips LLM QA and Review on trivially-scoped green-gate changes, so the gate floor doesn't eat small tasks. |
 | **Terminal-native** | A conversation, not a dashboard. Full-screen panels for the three things that need two dimensions — the jury's review, settings, the roster. Real line editing, history and completion. Every command is also a subcommand. |
 | **Honest cost accounting** | Real tokens, cost and duration per agent run, read from each backend's own meter, rolled up per ticket/scope/agent. Backends that report tokens but not dollars say so rather than showing a fake $0.00. |
@@ -651,8 +691,15 @@ ruff check backend/app tests
 Tests cover the security-critical and pipeline-logic paths — encryption at rest,
 password hashing and the bootstrap admin, role-based access control,
 runtime-settings validation and masking, revise-loop verdict parsing, jury
-synthesis and abstention, retrieval, and the preflight checks. CI runs lint +
-tests on Python 3.11 and 3.12.
+synthesis and abstention, retrieval, and the preflight checks.
+
+CI runs ruff plus the suite on **Linux (3.11 and 3.12), macOS and Windows**. The
+suite is installed **core-only** there — no `[semantic]`, no `[treesitter]` —
+because that is what a plain `pip install` gets, so anything needing an optional
+package is `importorskip`ped rather than assumed present. Two things this
+catches that a local run does not: an import that only exists with the extras,
+and reading a file without naming an encoding (Windows defaults to cp1252, and
+every CLI source is full of box glyphs).
 
 See **[CONTRIBUTING.md](CONTRIBUTING.md)** and **[SECURITY.md](SECURITY.md)**.
 
