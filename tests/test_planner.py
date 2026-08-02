@@ -52,7 +52,7 @@ def replies(*payloads):
     """Stub the Planner's model with a fixed sequence of decisions."""
     queue = list(payloads)
 
-    def _ask(system, user):
+    def _ask(system, user, cache_prefix=""):
         body = queue.pop(0) if queue else {"action": "plan", "plan": None}
         return {"text": json.dumps(body), "tokens_in": 10, "tokens_out": 5,
                 "cost": 0.001, "error": None}
@@ -82,9 +82,9 @@ class TestTheLoop:
             {"action": "plan", "plan": {"summary": "s", "steps": [PLAN_STEP]}}))
         real_ask = planner._ask
 
-        def spy(system, user):
-            seen.append(user)
-            return real_ask(system, user)
+        def spy(system, user, cache_prefix=""):
+            seen.append(cache_prefix + user)
+            return real_ask(system, user, cache_prefix)
         monkeypatch.setattr(planner, "_ask", spy)
         out = planner.plan("repo", str(repo), {"summary": "borders"})
         assert out["retrieved"] == ["measure cell width"]
@@ -98,8 +98,8 @@ class TestTheLoop:
         prompts: list[str] = []
         calls = {"n": 0}
 
-        def _ask(system, user):
-            prompts.append(user)
+        def _ask(system, user, cache_prefix=""):
+            prompts.append(cache_prefix + user)
             calls["n"] += 1
             # Always asks to retrieve; only the forced final round yields a plan.
             body = ({"action": "plan", "plan": {"summary": "s", "steps": [PLAN_STEP]}}
@@ -115,8 +115,8 @@ class TestTheLoop:
         monkeypatch.setattr(planner.knowledge_retriever, "retrieve_context", lambda *a, **k: "")
         prompts: list[str] = []
 
-        def _ask(system, user):
-            prompts.append(user)
+        def _ask(system, user, cache_prefix=""):
+            prompts.append(cache_prefix + user)
             body = ({"action": "retrieve", "queries": ["nothing"]} if len(prompts) == 1
                     else {"action": "plan", "plan": {"summary": "s", "steps": [PLAN_STEP]}})
             return {"text": json.dumps(body), "tokens_in": 0, "tokens_out": 0,
@@ -155,13 +155,13 @@ class TestFailingOpen:
         assert out["plan"] == {} and out["error"]
 
     def test_unparseable_output_is_an_empty_plan_not_an_exception(self, repo, monkeypatch):
-        monkeypatch.setattr(planner, "_ask", lambda s, u: {
+        monkeypatch.setattr(planner, "_ask", lambda s, u, cache_prefix="": {
             "text": "I think we should probably look at cells.py", "tokens_in": 0,
             "tokens_out": 0, "cost": 0.0, "error": None})
         assert planner.plan("repo", str(repo), {"summary": "x"})["plan"] == {}
 
     def test_a_provider_error_is_reported_not_raised(self, repo, monkeypatch):
-        monkeypatch.setattr(planner, "_ask", lambda s, u: {
+        monkeypatch.setattr(planner, "_ask", lambda s, u, cache_prefix="": {
             "text": "", "tokens_in": 0, "tokens_out": 0, "cost": 0.0,
             "error": "429 rate limited"})
         out = planner.plan("repo", str(repo), {"summary": "x"})
@@ -270,3 +270,82 @@ class TestRendering:
                                  "open_questions": ["q"]})
         assert "2 step(s)" in line and "2 file(s)" in line
         assert "2 symbol(s) not found" in line and "1 open question" in line
+
+
+class TestPromptIsCacheable:
+    """Measured on a live gitea run: the Planner paid ~95% of full retail on
+    322,893 input tokens, while Dev — whose backend caches across turns — paid
+    17% on 1.88M. Every round is a fresh process re-sending the whole
+    accumulated context, and that context is APPEND-ONLY, which is the ideal
+    shape for prompt caching. It just has to be handed over as a prefix."""
+
+    def test_the_stable_part_is_the_prefix_and_the_instruction_is_the_tail(
+            self, repo, monkeypatch):
+        seen: list[tuple[str, str]] = []
+
+        def _ask(system, user, cache_prefix=""):
+            seen.append((cache_prefix, user))
+            return {"text": json.dumps({"action": "plan",
+                                        "plan": {"summary": "s", "steps": [PLAN_STEP]}}),
+                    "tokens_in": 1, "tokens_out": 1, "cost": 0.0, "error": None}
+
+        monkeypatch.setattr(planner, "_ask", _ask)
+        planner.plan("repo", str(repo), {"summary": "borders"})
+
+        prefix, tail = seen[0]
+        assert "borders" in prefix, "the scope belongs in the cacheable prefix"
+        assert "Decide your next action" in tail
+        # The tail must stay small; a long varying suffix defeats the point.
+        assert len(tail) < 400
+
+    def test_the_prefix_only_ever_grows(self, repo, monkeypatch):
+        """Caching pays only while each round's prefix CONTAINS the previous
+        one verbatim. Any reordering or trimming silently breaks it."""
+        prefixes: list[str] = []
+        queue = [{"action": "retrieve", "queries": ["a"]},
+                 {"action": "retrieve", "queries": ["b"]},
+                 {"action": "plan", "plan": {"summary": "s", "steps": [PLAN_STEP]}}]
+
+        monkeypatch.setattr(planner.knowledge_retriever, "retrieve_context",
+                            lambda url, q, **k: f"HITS {q}")
+
+        def _ask(system, user, cache_prefix=""):
+            prefixes.append(cache_prefix)
+            return {"text": json.dumps(queue.pop(0)), "tokens_in": 1, "tokens_out": 1,
+                    "cost": 0.0, "error": None}
+
+        monkeypatch.setattr(planner, "_ask", _ask)
+        planner.plan("repo", str(repo), {"summary": "x"})
+
+        assert len(prefixes) == 3
+        for earlier, later in zip(prefixes, prefixes[1:]):
+            assert later.startswith(earlier), "a round's prefix must extend the last"
+
+
+class TestRetrievalIsNotRepeated:
+    """The rounds ask near-identical questions by design — observed live:
+    "dependency picker dropdown", then "dependency dropdown template", then
+    "dependency sidebar dropdown list". Their result sets overlap heavily, and
+    because the context is re-sent whole every round, each duplicated snippet
+    is paid for again on every later round."""
+
+    def test_the_same_set_is_carried_across_rounds(self, repo, monkeypatch):
+        excludes: list[set] = []
+
+        def fake_retrieve(url, q, **kw):
+            ex = kw.get("exclude")
+            excludes.append(ex)
+            if ex is not None:
+                ex.add(f"hit-for-{q}")
+            return f"HITS {q}"
+
+        monkeypatch.setattr(planner.knowledge_retriever, "retrieve_context", fake_retrieve)
+        monkeypatch.setattr(planner, "_ask", replies(
+            {"action": "retrieve", "queries": ["one"]},
+            {"action": "retrieve", "queries": ["two"]},
+            {"action": "plan", "plan": {"summary": "s", "steps": [PLAN_STEP]}}))
+        planner.plan("repo", str(repo), {"summary": "x"})
+
+        assert len(excludes) == 2
+        assert excludes[0] is excludes[1], "one set must span the rounds"
+        assert "hit-for-one" in excludes[1], "round 2 must know what round 1 showed"

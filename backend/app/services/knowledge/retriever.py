@@ -321,7 +321,8 @@ def _refine(repo_url: str, root: str, idents: list[str], known: set[str]) -> lis
 
 
 def retrieve_context(repo_url: str, query: str, *, plan_symbols: list[str] | None = None,
-                     limit: int = 8, snippets: bool = True) -> str:
+                     limit: int = 8, snippets: bool = True,
+                     exclude: set[str] | None = None) -> str:
     """The retrieval pipeline, as one call. Five stages, each switchable:
 
       1. **fuse**    — RRF of BM25 + dense embeddings  (always)
@@ -368,10 +369,23 @@ def retrieve_context(repo_url: str, query: str, *, plan_symbols: list[str] | Non
             ranked += found
             stages.append("lexical refinement")
 
+    # Hits the caller has already been shown. A Planner's rounds ask near-identical
+    # questions ("dependency picker dropdown", "dependency dropdown template",
+    # "dependency sidebar dropdown list"), so their result sets overlap heavily —
+    # and because its context is append-only and re-sent whole every round, each
+    # duplicate snippet is paid for again on every subsequent round.
+    if exclude:
+        ranked = [r for r in ranked if _hit_key(r) not in exclude]
+
     if not ranked:
         return ""
     ranked = rerank.rank(ranked, query, plan_symbols=plan_symbols, limit=limit)
     stages.append(f"{settings.rerank_mode} rerank")
+
+    # The set is updated in place so a caller running several queries in a burst
+    # passes one set and each query sees what the previous ones already showed.
+    if exclude is not None:
+        exclude.update(_hit_key(r) for r in ranked)
 
     lines = [f"  {graph.render_hit(r)}"
              + (f"   ({r['via']})" if r.get("via") else "") for r in ranked]

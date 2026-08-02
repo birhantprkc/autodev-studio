@@ -451,6 +451,32 @@ def _dev_agent(path: str, key: str, info: dict, on_event, context: str = "",
              "cost": cr["cost"], "error": cr["error"]}, providers.label(fb_provider, fb_model))
 
 
+def _scoped_test_paths(path: str, branch: str) -> list[str] | None:
+    """Files to narrow the suite to, or None to run all of it.
+
+    Only for Go, and only because `go test ./...` on a monorepo does not
+    finish: on gitea it compiles 3,024 files, blew the 600s timeout, and QA got
+    NO signal at all. `go test` takes package directories, so the branch's
+    changed files map onto exactly the packages the change can break — which is
+    what gitea's own Makefile does via GO_TEST_PACKAGES.
+
+    Deliberately not extended to other ecosystems. `test_paths` means *test
+    files* to pytest, so handing it changed source files would run pytest on
+    non-test modules; and pytest on a normal repo completes anyway, so there is
+    nothing to buy. The trade is real and one-directional: a scoped run can
+    miss a regression in a package the diff did not touch. Partial signal beats
+    the timeout's none, and the full suite still runs in CI.
+    """
+    try:
+        runner = lang.detect_runner(Path(path))
+        if runner is None or runner.kind != "go":
+            return None
+        changed = [f for f in git_ops.diff_names(path, ref=branch) if f.endswith(".go")]
+        return changed or None
+    except Exception:  # noqa: BLE001 — scoping is an optimisation, never a blocker
+        return None
+
+
 def _test_outcome(passed: bool | None, output: str) -> str:
     """How the suite ended, in the log line a human actually reads.
 
@@ -1041,7 +1067,7 @@ def _run_scope_locked_impl(session_id: int) -> None:
         # QA (OpenAI) over the whole scope diff
         _update_all(ids, status=TaskStatus.qa.value)
         rid, t0 = agent_runner.start_run(rep, "qa")
-        passed, test_out = git_ops.run_tests(path)
+        passed, test_out = git_ops.run_tests(path, _scoped_test_paths(path, branch))
         # Only re-diff failures when the suite failed AND the repo had pre-existing
         # failures — the exact case where QA would otherwise misread stale failures
         # as regressions. Clean repos / clean runs pay no extra suite run.

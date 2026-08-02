@@ -106,7 +106,7 @@ def _load_json(text: str) -> dict:
 
 # --- The planning loop --------------------------------------------------------
 
-def _ask(system: str, user: str) -> dict:
+def _ask(system: str, user: str, cache_prefix: str = "") -> dict:
     """One Planner decision, on whichever provider the operator pointed the stage
     at. An agentic CLI is a legitimate choice here — planning is read-only, and a
     CLI-backed planner reaches the same tools through the shim."""
@@ -114,13 +114,15 @@ def _ask(system: str, user: str) -> dict:
     model = settings.planner_model or settings.pm_model
     backend = providers.agent_backend(provider)
     if backend:
-        res = agent_backends.chat(backend, system, user, model=model, json_mode=True)
+        res = agent_backends.chat(backend, system, cache_prefix + user,
+                                  model=model, json_mode=True)
         # CLI backends report usage inconsistently (None = unknown, not free);
         # coerce to numbers so the run row's arithmetic stays sound.
         return {"text": res.get("text", ""), "tokens_in": res.get("tokens_in") or 0,
                 "tokens_out": res.get("tokens_out") or 0, "cost": res.get("cost") or 0.0,
                 "error": res.get("error")}
-    return llm.chat(system, user, provider=provider, model=model, json_mode=True)
+    return llm.chat(system, user, provider=provider, model=model, json_mode=True,
+                    cache_prefix=cache_prefix)
 
 
 def _tool_round(repo_url: str, workdir: str, calls: list) -> list[str]:
@@ -170,6 +172,7 @@ def plan(repo_url: str, workdir: str, scope: dict, tickets: list[dict] | None = 
     cost = 0.0
     err = None
     retrieved: list[str] = []
+    shown: set[str] = set()     # hit keys already in `context`; see the loop below
     max_rounds = max(1, settings.planner_max_rounds)
 
     for round_no in range(max_rounds + 1):
@@ -177,10 +180,22 @@ def plan(repo_url: str, workdir: str, scope: dict, tickets: list[dict] | None = 
         force = ("\n\nIMPORTANT: this is your LAST round. Do NOT choose 'retrieve' — "
                  "commit to a plan with what you have, and put anything you could not "
                  "confirm in `open_questions`." if final else "")
-        user = (f"{request}\n\nWhat you know about the repository so far:\n"
-                + ("\n\n".join(context) if context else "(nothing yet — retrieve first)")
-                + f"\n\nDecide your next action as JSON.{force}")
-        r = _ask(_SYSTEM, user)
+        # Split at the boundary between what is stable across rounds and what
+        # changes. The scope and everything retrieved so far are APPEND-ONLY, so
+        # each round's prefix contains the previous round's verbatim — the ideal
+        # shape for prompt caching. Only the trailing instruction varies, and it
+        # is a couple of lines. Measured before this: the Planner paid ~95% of
+        # full retail on 322,893 input tokens while Dev, whose backend caches
+        # across turns, paid 17% on 1.88M.
+        # The empty-case hint lives in the TAIL, not the prefix. Putting it in
+        # the prefix made round 1 end with "(nothing yet — retrieve first)" and
+        # round 2 REPLACE that text with the hits, so the prefix was not
+        # append-only and the cache missed at its very first boundary.
+        prefix = (f"{request}\n\nWhat you know about the repository so far:\n"
+                  + "\n\n".join(context))
+        empty = "" if context else "\n(nothing retrieved yet — retrieve first.)"
+        tail = f"{empty}\n\nDecide your next action as JSON.{force}"
+        r = _ask(_SYSTEM, tail, cache_prefix=prefix)
         tin += r.get("tokens_in", 0) or 0
         tout += r.get("tokens_out", 0) or 0
         cost += r.get("cost", 0.0) or 0.0
@@ -191,7 +206,14 @@ def plan(repo_url: str, workdir: str, scope: dict, tickets: list[dict] | None = 
             queries = [str(q) for q in (data.get("queries") or []) if str(q).strip()][:3]
             blocks: list[str] = []
             for q in queries:
-                blocks.append(knowledge_retriever.retrieve_context(repo_url, q, limit=6))
+                # `shown` carries across rounds, so a hit already in the context
+                # is not rendered again. The rounds ask near-identical questions
+                # by design ("dependency picker dropdown", then "dependency
+                # dropdown template", then "dependency sidebar dropdown list"),
+                # so their result sets overlap heavily — and the context is
+                # re-sent whole every round, making each duplicate compound.
+                blocks.append(knowledge_retriever.retrieve_context(
+                    repo_url, q, limit=6, exclude=shown))
                 retrieved.append(q)
             blocks += _tool_round(repo_url, workdir, data.get("tools") or [])
             blocks = [b for b in blocks if b]
