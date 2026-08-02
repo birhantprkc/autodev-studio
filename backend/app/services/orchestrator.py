@@ -1108,6 +1108,16 @@ def _run_scope_locked_impl(session_id: int) -> None:
                                  f"{n_files} file(s)/{n_lines} line(s)) — saved the QA+Review gate cost")
                 agent_runner.finish_run(rid, rep, t0)
                 break
+        # A suite that never ran must not read as a quiet green. QA sees only a
+        # diff and the test output, so "no failures in the output" is exactly
+        # what a passing run looks like — on gitea the suite timed out and QA
+        # returned PASS having verified nothing.
+        if passed is None:
+            test_out = ("NO TEST SIGNAL: the suite did NOT run for this change "
+                        f"({_test_outcome(passed, test_out)}). The absence of failures below "
+                        "is NOT evidence of correctness. Judge the diff by reading it, and "
+                        "state explicitly in your verdict that no tests were executed — do "
+                        "not claim the change is verified.\n\n") + test_out
         impact_text = _impact_brief(repo_url, path)
         qa = _qa_agent(f"scope-{session_id}", scope_title, all_criteria, diff, test_out,
                        agent_runner.logger_for(rid), impact=impact_text, path=path)
@@ -1115,6 +1125,13 @@ def _run_scope_locked_impl(session_id: int) -> None:
         if qa.get("text"):
             agent_runner.log(rid, "info", qa["text"])  # full QA verdict for the log panel
         qa_text = qa.get("text", "")
+        # Stamp the record too, not just the prompt: qa_summary is what the board,
+        # the PR body and the write-back all read, and a bare "PASS" there claims
+        # a verification that never happened.
+        if qa_text and passed is None:
+            qa_text += ("\n\n[NO TEST SIGNAL — the suite did not run for this change; "
+                        "this verdict is a reading of the diff, not a verified result.]")
+            qa["text"] = qa_text
         if qa_text:
             _update_all(ids, qa_summary=qa_text)  # errored calls keep the last good verdict
         agent_runner.finish_run(rid, rep, t0, tokens_in=qa.get("tokens_in", 0), tokens_out=qa.get("tokens_out", 0),

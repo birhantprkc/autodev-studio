@@ -203,9 +203,27 @@ def ticket_detail(task: Task, g: theme.Glyphs) -> RenderableType:
     if task.description:
         body.extend([Text(""), Markdown(task.description)])
     if task.acceptance_criteria:
-        body.extend([Text(""), Text("Acceptance criteria", style=S("heading"))])
+        assumed = sum(1 for c in task.acceptance_criteria
+                      if str(c).lstrip().lower().startswith("[assumed]"))
+        header = Text("Acceptance criteria", style=S("heading"))
+        if assumed:
+            # This is the last screen before money is spent. A criterion the PM
+            # decided rather than heard is exactly what a human should look at,
+            # so it is marked, counted, and coloured — not left to be skimmed.
+            header += Text(f"   {assumed} assumed by the PM — check these",
+                           style=S("warn"))
+        body.extend([Text(""), header])
         for criterion in task.acceptance_criteria:
-            body.append(Text(f"  {g.ok} ", style=S("ok")) + Text(str(criterion)))
+            text = str(criterion).strip()
+            low = text.lower()
+            if low.startswith("[assumed]"):
+                body.append(Text(f"  {g.pending} ", style=S("warn"))
+                            + Text(text[len("[assumed]"):].strip(), style=S("warn")))
+            elif low.startswith("[stated]"):
+                body.append(Text(f"  {g.ok} ", style=S("ok"))
+                            + Text(text[len("[stated]"):].strip()))
+            else:
+                body.append(Text(f"  {g.ok} ", style=S("ok")) + Text(text))
     if task.affected_files:
         body.extend([Text(""), Text("Files", style=S("heading"))])
         for path in task.affected_files[:12]:

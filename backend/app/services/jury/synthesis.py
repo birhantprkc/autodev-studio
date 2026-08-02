@@ -149,7 +149,7 @@ def _coerce_entries(raw, *, keep_reason: bool = False) -> list[dict]:
 
 
 def deliberate(opinions: list[panel.Opinion], task_key: str, title: str,
-               criteria: list[str], on_event=None) -> dict:
+               criteria: list[str], on_event=None, request: str = "") -> dict:
     """Combine the jurors' opinions into one verdict.
 
     Returns the structured decision; ``tokens_in``/``tokens_out``/``cost`` on it
@@ -174,7 +174,8 @@ def deliberate(opinions: list[panel.Opinion], task_key: str, title: str,
     model = settings.jury_synthesis_model or settings.review_model
     user = prompts.foreperson_user(
         task_key, title, criteria, panel.render_opinions(usable), min_conf,
-        abstained=", ".join(f"{o.name} ({o.persona})" for o in abstained))
+        abstained=", ".join(f"{o.name} ({o.persona})" for o in abstained),
+        request=request)
 
     payload, usage = {}, {"tokens_in": 0, "tokens_out": 0, "cost": 0.0}
     if providers.can_chat(provider):

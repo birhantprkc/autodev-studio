@@ -100,7 +100,8 @@ def review(task_key: str, title: str, criteria: list[str], diff: str, *, workdir
         for op in opinions:
             on_opinion(op)
 
-    decision = synthesis.deliberate(opinions, task_key, title, criteria, on_event=on_event)
+    decision = synthesis.deliberate(opinions, task_key, title, criteria,
+                                    on_event=on_event, request=request)
     # Every juror's own opinion IN FULL, carried on the decision and persisted
     # with it. The synthesis is the decision, but it is not the evidence: a
     # reader has to be able to see what each judge actually said, including the

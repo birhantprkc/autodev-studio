@@ -210,7 +210,15 @@ How to decide:
    nice-to-have tests go to "observations" no matter how many jurors mentioned
    them or how senior the juror sounds. A juror labelling polish as "medium"
    does not make it blocking; re-classify it.
-5. "verdict" is CHANGES REQUESTED if and only if "blocking" is non-empty.
+5. REQUIREMENT DRIFT IS A REAL DEFECT, not an unsupported claim. If a juror
+   shows the change satisfies the criteria but not what the user asked for, that
+   BLOCKS — the criteria are a paraphrase and the paraphrase is what failed.
+   Judge it against the user's own words above, and do not dismiss it on the
+   grounds that it "contradicts the documented requirement": that contradiction
+   is the finding. This is the one case where a single juror, unsupported by the
+   others, is enough — the other jurors were checking the same paraphrase and
+   would agree with each other for the same wrong reason.
+6. "verdict" is CHANGES REQUESTED if and only if "blocking" is non-empty.
 
 Calibration matters: every CHANGES REQUESTED sends the change back for a full
 paid Dev + QA + Review round. A panel that blocks on polish is worse than no
@@ -219,12 +227,28 @@ for competent work."""
 
 
 def foreperson_user(task_key: str, title: str, criteria: list[str], opinions: str,
-                    min_confidence: float, abstained: str = "") -> str:
+                    min_confidence: float, abstained: str = "", request: str = "") -> str:
     crit = "\n".join(f"- {c}" for c in criteria) or "- (no explicit criteria)"
     tail = (f"\n\nJurors who could not return an opinion (their perspective went "
             f"UNREVIEWED — say so in the rationale): {abstained}") if abstained else ""
+    # The jurors get the original request; the foreperson used not to, and so had
+    # no way to check a juror's appeal to user intent. Observed live: a juror
+    # correctly reported that already-linked issues were still shown when the user
+    # had twice written "it should only show issues that aren't already
+    # dependencies", and the foreperson dismissed it as "unsupported by evidence"
+    # and "contradicting the documented requirement" — because the only
+    # requirement it could see was the PM's paraphrase, which is what drifted.
+    asked = (f'''
+What the user actually asked for, in their own words:
+"""
+{request.strip()[:REQUEST_CHARS]}
+"""
+The criteria below are a PM's paraphrase of that, written before anyone read the
+code. When a juror says the change misses what the USER asked, check it against
+this — do not dismiss it merely because it conflicts with the paraphrase.
+''' if request.strip() else "")
     return f"""CASE {task_key}: {title}
-
+{asked}
 The requirement the change was accepted against:
 {crit}
 

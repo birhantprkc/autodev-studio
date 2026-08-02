@@ -139,3 +139,67 @@ class TestProtocolDunders:
 
         monkeypatch.setattr(planner.graph, "lookup", lookup)
         assert planner._graph_files("repo", "_render_empty", "Table") == ["rich/table.py"]
+
+
+class TestForepersonSeesTheUserRequest:
+    """The jurors were given the user's verbatim request; the foreperson was
+    not. It saw only "The requirement the change was accepted against: <PM
+    criteria>", so a juror appealing to user intent had made, from where the
+    foreperson sat, an unsupported claim.
+
+    Observed live on gitea: the user wrote "it should only show issues that
+    aren't already dependencies" twice, PM's criteria said already-linked issues
+    should "appear with disabled styling", Dev implemented the criteria, and the
+    one juror who caught the divergence was dismissed for "contradicting the
+    documented requirement" — the paraphrase being the thing that drifted."""
+
+    def _prompt(self, request=""):
+        from app.services.jury import prompts
+
+        return prompts.foreperson_user(
+            "G-101", "Disable already-linked dependencies",
+            ["already-linked issues appear with disabled styling"],
+            "juror said the items are still displayed", 0.5, request=request)
+
+    def test_the_users_words_reach_the_foreperson(self):
+        out = self._prompt("it should only show issues that aren't already dependencies")
+        assert "only show issues that aren't already dependencies" in out
+
+    def test_it_is_told_the_criteria_are_a_paraphrase(self):
+        out = self._prompt("hide them")
+        assert "paraphrase" in out.lower()
+        assert "do not dismiss it merely because it conflicts" in out.lower()
+
+    def test_drift_is_named_as_blocking_in_the_contract(self):
+        """Without this the foreperson re-derives 'it satisfies the criteria,
+        therefore approve' — which is locally correct and globally wrong."""
+        out = self._prompt("hide them")
+        low = out.lower()
+        assert "requirement drift" in low
+        assert "single juror" in low, "the other jurors check the same paraphrase"
+
+    def test_no_request_leaves_the_prompt_unchanged_in_shape(self):
+        out = self._prompt("")
+        assert "What the user actually asked for" not in out
+        assert "The requirement the change was accepted against" in out
+
+
+class TestQaCannotSilentlyPassWithoutTests:
+    """QA sees a diff and the test output, so "no failures in the output" is
+    exactly what a passing run looks like. On gitea the suite timed out and QA
+    returned PASS having verified nothing."""
+
+    def test_a_missing_suite_is_announced_not_implied(self):
+        from app.services import orchestrator
+
+        assert "TIMED OUT" in orchestrator._test_outcome(
+            None, "Could not run tests: timed out after 600 seconds")
+
+    def test_the_stamped_verdict_says_it_was_unverified(self):
+        """qa_summary feeds the board, the PR body and the write-back — a bare
+        PASS there claims a verification that never happened."""
+        note = ("\n\n[NO TEST SIGNAL — the suite did not run for this change; "
+                "this verdict is a reading of the diff, not a verified result.]")
+        stamped = "VERDICT: PASS" + note
+        assert "NO TEST SIGNAL" in stamped
+        assert "not a verified result" in stamped

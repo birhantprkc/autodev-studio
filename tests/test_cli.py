@@ -640,3 +640,41 @@ class TestLiveActivityWindow:
         view.apply("run.log", {"run_id": 2, "severity": "info", "message": "→ Read: x.go"})
         view.apply("run.finished", {"run_id": 2})
         assert "Dev is doing" not in self._out(view)
+
+
+class TestAssumedCriteriaAreVisible:
+    """PM tags each criterion [stated] or [assumed]. /approve is the last point
+    a human sees the requirement before money is spent, so the ones PM decided
+    rather than heard have to stand out — that is the gate that would have
+    caught the gitea drift, and both of us skimmed past it."""
+
+    def _out(self, criteria):
+        from app.cli import render, theme
+        from app.models import Task
+
+        task = Task(id=1, key="G-101", title="t", status="scoped", repo_id=1,
+                    acceptance_criteria=criteria, approved=False, priority="medium")
+        console = theme.console(width=100, no_color=True)
+        with console.capture() as cap:
+            console.print(render.ticket_detail(task, theme.Glyphs(True)))
+        return cap.get()
+
+    def test_assumed_criteria_are_counted_in_the_header(self):
+        out = self._out(["[stated] the dropdown excludes already-added issues",
+                         "[assumed] they appear greyed out instead of hidden"])
+        assert "1 assumed by the PM" in out
+
+    def test_the_tags_are_stripped_from_the_text(self):
+        out = self._out(["[stated] excludes already-added issues"])
+        assert "excludes already-added issues" in out
+        assert "[stated]" not in out
+
+    def test_untagged_criteria_still_render(self):
+        """Older tickets predate the tags; they must not lose their criteria."""
+        out = self._out(["plain old criterion"])
+        assert "plain old criterion" in out
+        assert "assumed by the PM" not in out
+
+    def test_all_stated_shows_no_warning(self):
+        out = self._out(["[stated] a", "[stated] b"])
+        assert "assumed by the PM" not in out
