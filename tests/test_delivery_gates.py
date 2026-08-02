@@ -101,3 +101,39 @@ def test_interrupted_scope_is_persisted_as_blocked(db):
     assert task.current_agent is None
     assert "test interruption" in task.review_summary
     assert session.status == "failed"
+
+
+class TestDevFailureStopsTheScope:
+    """A Dev failure stopped the run only when it had ALSO written nothing:
+
+        if res["error"] and not committed:   # stop
+
+    An agent killed part-way through has usually written something — the live
+    quota cutoff that prompted this ran 865s and 1.2M input tokens before it
+    died, so `committed` was True and the `and` let the pipeline walk into QA
+    to judge a half-finished change. The jury cannot tell a truncated edit set
+    from a complete one by reading the diff."""
+
+    def test_a_partial_commit_does_not_earn_a_qa_pass(self, monkeypatch):
+        """The regression itself: errored Dev + files committed must still stop
+        before QA."""
+        from app.services import orchestrator
+
+        assert orchestrator._should_stop_after_dev({"error": "session limit"}, committed=True)
+
+    def test_an_errored_dev_that_wrote_nothing_still_stops(self):
+        from app.services import orchestrator
+
+        assert orchestrator._should_stop_after_dev({"error": "boom"}, committed=False)
+
+    def test_a_clean_dev_run_proceeds(self):
+        from app.services import orchestrator
+
+        assert not orchestrator._should_stop_after_dev({"error": None}, committed=True)
+
+    def test_a_successful_dev_that_changed_nothing_still_proceeds(self):
+        """No error and no diff is a legitimate outcome (already-satisfied
+        criteria); QA is what decides whether that is acceptable."""
+        from app.services import orchestrator
+
+        assert not orchestrator._should_stop_after_dev({"error": ""}, committed=False)

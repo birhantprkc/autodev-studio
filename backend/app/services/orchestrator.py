@@ -451,6 +451,18 @@ def _dev_agent(path: str, key: str, info: dict, on_event, context: str = "",
              "cost": cr["cost"], "error": cr["error"]}, providers.label(fb_provider, fb_model))
 
 
+def _should_stop_after_dev(res: dict, committed: bool) -> bool:
+    """Whether a Dev result must halt the scope before QA.
+
+    Any error does, whether or not files were written. `committed` stays in the
+    signature because the caller reports it (partial work is discarded on the
+    next run) — it is deliberately NOT part of the decision. It used to be, as
+    `error and not committed`, which let a quota-killed agent that had already
+    edited files hand a truncated change to the jury.
+    """
+    return bool(res.get("error"))
+
+
 def _inconclusive(res: dict) -> bool:
     """The agent call produced NO verdict at all (errored with empty text) —
     fundamentally different from a verdict of PASS/FAIL/APPROVED."""
@@ -977,11 +989,23 @@ def _run_scope_locked_impl(session_id: int) -> None:
                      "Committed changes" if committed else "No file changes produced")
     agent_runner.finish_run(rid, rep, t0, tokens_in=res["tokens_in"], tokens_out=res["tokens_out"],
                             cost=res["cost"], error=res["error"])
-    if res["error"] and not committed:
-        logger.error("run_scope %s: Dev produced nothing (%s) — stopping before QA", session_id, res["error"])
+    if _should_stop_after_dev(res, committed):
+        # ANY Dev failure stops the scope — not just one that wrote nothing.
+        # This used to require `and not committed`, so an agent killed part-way
+        # through (a quota cutoff after 865s and 1.2M tokens, observed live) had
+        # already written files, `committed` was True, and the `and` let the run
+        # walk into QA to judge a half-finished change. A partial edit set from
+        # a killed agent is debris, not a deliverable, and the jury cannot tell
+        # the difference from the diff alone.
+        partial = " (partial changes were committed and will be discarded)" if committed else ""
+        message = f"Dev failed: {res['error'][:400]}"
+        logger.error("run_scope %s: %s%s — stopping before QA", session_id, message, partial)
+        agent_runner.log(rid, "error", f"{message}{partial} — stopping before QA")
         # Recovery: undo the in_dev marker on every subtask so the scope is
-        # immediately re-runnable (no manual DB reset needed).
-        _update_all(ids, status=TaskStatus.scoped.value)
+        # immediately re-runnable (no manual DB reset needed). checkout_branch
+        # resets the branch from origin's default on the next run, so the
+        # partial commit above cannot leak into it.
+        _update_all(ids, status=TaskStatus.scoped.value, review_summary=message)
         return
 
     diff = git_ops.diff(path, ref=branch)
