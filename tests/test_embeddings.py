@@ -227,7 +227,7 @@ class TestEmbedUsesRealGraphHelpers:
 
         from app.services.knowledge import embed, graph
 
-        source = Path(embed.__file__).read_text()
+        source = Path(embed.__file__).read_text(encoding="utf-8")
         missing = [n for n in sorted(set(re.findall(r"\bgraph\.([A-Za-z_]\w*)", source)))
                    if not hasattr(graph, n)]
         assert missing == []

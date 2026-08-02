@@ -361,7 +361,8 @@ class TestReplSurvivesABadCommand:
         missing = [
             (path.name, name)
             for path in cli.rglob("*.py")
-            for name in re.findall(r"\bcfg\.([a-z_][a-z0-9_]*)", path.read_text())
+            for name in re.findall(r"\bcfg\.([a-z_][a-z0-9_]*)",
+                                       path.read_text(encoding="utf-8"))
             if not hasattr(cfg, name)
         ]
         assert missing == []
@@ -678,3 +679,29 @@ class TestAssumedCriteriaAreVisible:
     def test_all_stated_shows_no_warning(self):
         out = self._out(["[stated] a", "[stated] b"])
         assert "assumed by the PM" not in out
+
+
+class TestSourceIsReadAsUtf8:
+    """Windows defaults to cp1252, not UTF-8. Reading a file with no explicit
+    encoding works on Linux and macOS and dies on Windows the moment that file
+    contains a box glyph or an arrow — which every CLI source file does. CI
+    caught it there and only there:
+
+        UnicodeDecodeError: 'charmap' codec can't decode byte 0x8f
+
+    Cheap to state as a rule, so it is stated rather than rediscovered.
+    """
+
+    def test_no_read_text_without_an_explicit_encoding(self):
+        import re
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        offenders = [
+            f"{path.relative_to(root)}:{i}"
+            for folder in ("tests", "backend/app")
+            for path in (root / folder).rglob("*.py")
+            for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+            if re.search(r"\.read_text\(\s*\)", line)
+        ]
+        assert offenders == [], f"read_text() without encoding: {offenders}"

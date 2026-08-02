@@ -330,7 +330,7 @@ def install(cwd: str, repo: str) -> str:
         shim.chmod(0o755)
         exclude = root / ".git" / "info" / "exclude"
         if exclude.parent.is_dir():
-            body = exclude.read_text() if exclude.exists() else ""
+            body = exclude.read_text(encoding="utf-8") if exclude.exists() else ""
             if _SHIM_DIR not in body:
                 exclude.write_text(body.rstrip("\n") + f"\n{_SHIM_DIR}/\n")
     except OSError:

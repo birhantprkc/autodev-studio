@@ -154,7 +154,7 @@ class TestServerBackedShim:
 
     def test_install_mints_a_token_bound_to_one_repo_and_working_copy(self, repo):
         tools.install(str(repo), "example__repo")
-        script = (repo / ".codejury" / "kb.py").read_text()
+        script = (repo / ".codejury" / "kb.py").read_text(encoding="utf-8")
         token = script.split('TOKEN = ')[1].splitlines()[0].strip().strip("'\"")
         assert tools.resolve_token(token) == ("example__repo", str(repo))
 
@@ -165,7 +165,7 @@ class TestServerBackedShim:
         from app.routers import kb_tools
 
         tools.install(str(repo), "example__repo")
-        token = (repo / ".codejury" / "kb.py").read_text().split(
+        token = (repo / ".codejury" / "kb.py").read_text(encoding="utf-8").split(
             'TOKEN = ')[1].splitlines()[0].strip().strip("'\"")
         out = kb_tools.run_tool(kb_tools.ToolCall(token=token, tool="lookup", arg="cell_width"))
         assert "ansi.py" in out["result"]

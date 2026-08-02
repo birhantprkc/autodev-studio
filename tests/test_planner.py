@@ -206,7 +206,7 @@ class TestVerification:
         # It appears in the repo but nothing defines it — a usage, a string, a
         # config key. Inventing a definition site for it would be a fabrication.
         (repo / "cells.py").write_text(
-            (repo / "cells.py").read_text() + "\nprint(SOME_EXTERNAL_FLAG)\n")
+            (repo / "cells.py").read_text(encoding="utf-8") + "\nprint(SOME_EXTERNAL_FLAG)\n")
         plan = planner.verify_plan("repo", str(repo), planner._normalize(
             {"steps": [{"intent": "x", "symbols": ["SOME_EXTERNAL_FLAG"]}]}))
         assert plan["steps"][0]["symbols"] == ["SOME_EXTERNAL_FLAG"]
