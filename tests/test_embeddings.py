@@ -396,3 +396,113 @@ class TestHardwareScaling:
     def test_a_single_core_box_still_gets_one_thread(self, monkeypatch):
         threads, _ = self._at(monkeypatch, 1, 64000)
         assert threads == 1
+
+
+class TestBuildReleasesTheStoreLock:
+    """Embedded Qdrant takes an EXCLUSIVE file lock, and the build runs in a
+    SUBPROCESS. A process that has answered even one search already holds that
+    lock, so the child died on "Storage folder is already accessed by another
+    instance" and reported zero vectors. Observed live: a graph reindex on
+    gitea left the dense index stamped at the previous SHA, because the rebuild
+    could never open the store."""
+
+    def test_the_cached_client_is_released_before_the_child_starts(self, monkeypatch):
+        from app.services.knowledge import embed
+
+        monkeypatch.setattr(embed, "available", lambda: True)
+        monkeypatch.setattr(embed.graph, "available", lambda: True)
+        monkeypatch.setattr(embed, "_enough_ram", lambda: True)
+
+        closed_before_spawn = []
+
+        class FakeProc:
+            def __init__(self, *a, **k):
+                closed_before_spawn.append(embed._client is None)
+                self.stdout = iter(["VECTORS=5\n"])
+                self.stderr = io.StringIO("")
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                pass
+
+        embed._client = object()          # stand in for a live, lock-holding client
+        monkeypatch.setattr(embed.subprocess, "Popen", FakeProc)
+        try:
+            assert embed.build("https://x/repo") == 5
+        finally:
+            embed._client = None
+        assert closed_before_spawn == [True], "the lock was still held when the child spawned"
+
+
+class TestIncrementalReEmbed:
+    """A merge that touches four files used to cost a full rebuild — an hour of
+    CPU to redo 15,987 vectors that were still correct. Only the files the diff
+    touched are re-embedded now."""
+
+    class FakePoint:
+        def __init__(self, pid, file):
+            self.id, self.payload = pid, {"file": file}
+
+    def _client(self, stored):
+        points = [self.FakePoint(pid, f) for pid, f in stored.items()]
+
+        class FakeClient:
+            deleted: list = []
+
+            def collection_exists(self, c):
+                return True
+
+            def scroll(self, c, limit=4096, offset=None, **k):
+                return points, None
+
+            def delete(self, c, points_selector):
+                FakeClient.deleted.extend(points_selector)
+
+        FakeClient.deleted = []
+        return FakeClient()
+
+    def _run(self, monkeypatch, stored, changed, deleted):
+        from app.services.knowledge import embed
+
+        monkeypatch.setattr(embed.git_ops, "changed_files",
+                            lambda p, a, b: (changed, deleted))
+        monkeypatch.setattr(embed.git_ops, "workdir", lambda u: "/tmp/x")
+        monkeypatch.setattr(embed, "_write_stamp", lambda u, s: None)
+        client = self._client(stored)
+        surviving, fresh = embed._incremental(client, "c", "https://x/r", "old", "new", 4)
+        return surviving, fresh, client
+
+    def test_only_touched_files_lose_their_vectors(self, monkeypatch):
+        stored = {"id1": "a.go", "id2": "a.go", "id3": "b.go", "id4": "c.go"}
+        surviving, fresh, client = self._run(monkeypatch, stored, ["a.go"], [])
+        assert fresh is False
+        assert surviving == {"id3", "id4"}
+        assert sorted(type(client).deleted) == ["id1", "id2"]
+
+    def test_deleted_files_lose_their_orphaned_vectors(self, monkeypatch):
+        """A node that no longer exists is never re-embedded, so its vector
+        would otherwise survive forever and keep matching queries."""
+        stored = {"id1": "gone.go", "id2": "kept.go"}
+        surviving, _, client = self._run(monkeypatch, stored, [], ["gone.go"])
+        assert surviving == {"id2"}
+        assert type(client).deleted == ["id1"]
+
+    def test_an_uncomputable_range_falls_back_to_a_full_rebuild(self, monkeypatch):
+        """An old SHA gc'd away or a shallow clone — trusting a partial diff
+        there would silently leave stale vectors behind."""
+        from app.services.knowledge import embed
+
+        monkeypatch.setattr(embed.git_ops, "changed_files", lambda p, a, b: None)
+        monkeypatch.setattr(embed.git_ops, "workdir", lambda u: "/tmp/x")
+        surviving, fresh = embed._incremental(self._client({}), "c", "https://x/r",
+                                              "old", "new", 4)
+        assert fresh is True and surviving == set()
+
+    def test_an_empty_diff_keeps_everything(self, monkeypatch):
+        stored = {"id1": "a.go", "id2": "b.go"}
+        surviving, fresh, client = self._run(monkeypatch, stored, [], [])
+        assert fresh is False
+        assert surviving == {"id1", "id2"}
+        assert type(client).deleted == []

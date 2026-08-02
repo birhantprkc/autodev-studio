@@ -227,7 +227,12 @@ class RunView:
                              style="heading"))
             for line in running.activity[-ACTIVITY_LINES:]:
                 style = "brand.dim" if line.startswith(TOOL_PREFIX) else "muted"
-                body.append(Text(f"    {line[:120]}", style=style))
+                # No hard character cap: 120 columns truncated mid-word on any
+                # terminal wider than that, which is most of them. overflow
+                # trims to the width actually available, with an ellipsis so a
+                # cut line is visibly cut rather than silently short.
+                body.append(Text(f"    {line}", style=style,
+                                 no_wrap=True, overflow="ellipsis"))
 
         if include_tail and self.tail:
             body.append(Text(""))

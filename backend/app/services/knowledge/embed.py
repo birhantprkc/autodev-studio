@@ -322,6 +322,14 @@ def build(repo_url: str, on_progress=None, resume: bool = True) -> int:
         return 0
     env = {**os.environ, "OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1",
            "OPENBLAS_NUM_THREADS": "1"}
+    # Hand the store's lock to the child. Embedded Qdrant takes an EXCLUSIVE file
+    # lock, and this process has usually taken it already by answering a search;
+    # the child then dies on "Storage folder is already accessed by another
+    # instance" and reports zero vectors. Observed live: a graph reindex on
+    # gitea left the dense index stamped at the previous SHA because the rebuild
+    # could never open the store. The parent reopens lazily on its next query.
+    _close_client()
+
     vectors, deadline = 0, time.monotonic() + _BUILD_TIMEOUT
     argv = [sys.executable, "-m", "app.services.knowledge.embed", repo_url]
     if not resume:
@@ -384,14 +392,58 @@ def _write_stamp(repo_url: str, sha: str) -> None:
 
 def _existing_ids(client, coll: str) -> set:
     """Point ids already in the collection, so a resumed build can skip them."""
-    found, offset = set(), None
+    return set(_existing_points(client, coll))
+
+
+def _existing_points(client, coll: str) -> dict:
+    """``{point_id: file_path}`` for everything stored — the payload is what lets
+    an incremental rebuild find the vectors belonging to changed files."""
+    found: dict = {}
+    offset = None
     while True:
         points, offset = client.scroll(coll, limit=4096, offset=offset,
-                                       with_payload=False, with_vectors=False)
-        found.update(p.id for p in points)
+                                       with_payload=True, with_vectors=False)
+        for p in points:
+            found[p.id] = (p.payload or {}).get("file") or ""
         if offset is None:
             break
     return found
+
+
+def _stale_ids(stored: dict, touched: set) -> set:
+    """Stored points whose file changed, was renamed away, or was deleted."""
+    return {pid for pid, path in stored.items() if path in touched}
+
+
+def _incremental(client, coll: str, repo_url: str, stamped: str, sha: str,
+                 total_nodes: int) -> tuple[set, bool]:
+    """Drop only the vectors for files the diff touched.
+
+    Returns ``(surviving_ids, fresh)``. `fresh` is True when the range could not
+    be computed — an old SHA gc'd away, a shallow clone — in which case the
+    caller falls back to a full rebuild rather than trusting a partial diff.
+    """
+    delta = git_ops.changed_files(str(git_ops.workdir(repo_url)), stamped, sha)
+    if delta is None:
+        logger.info("knowledge.embed: cannot diff %s..%s — full rebuild",
+                    stamped[:9], sha[:9])
+        return set(), True
+
+    changed, deleted = delta
+    touched = set(changed) | set(deleted)
+    if not touched:
+        return _existing_ids(client, coll), False
+
+    stored = _existing_points(client, coll)
+    stale = _stale_ids(stored, touched)
+    if stale:
+        client.delete(coll, points_selector=list(stale))
+    surviving = set(stored) - stale
+    logger.info("knowledge.embed: %s..%s touched %d file(s) — re-embedding %d node(s), "
+                "keeping %d of %d", stamped[:9], sha[:9], len(touched),
+                total_nodes - len(surviving), len(surviving), total_nodes)
+    _write_stamp(repo_url, sha)
+    return surviving, False
 
 
 def build_inprocess(repo_url: str, progress=None, resume: bool = True) -> int:
@@ -433,9 +485,16 @@ def build_inprocess(repo_url: str, progress=None, resume: bool = True) -> int:
             fresh = False
             logger.info("knowledge.embed: resuming at %d/%d nodes for %s",
                         len(done_ids), len(nodes), repo_url)
-        else:
-            # Either the repo moved or we were told to start over. Stale vectors
-            # keyed by an unchanged qualified name would otherwise survive.
+        elif resume and sha and stamped:
+            # The repo moved. Re-embedding all 15,991 nodes because one merge
+            # touched four files is an hour of CPU to redo work that is still
+            # correct, so drop only the vectors belonging to files the diff
+            # touched and keep the rest. Deleted and renamed-away paths are in
+            # `deleted`, so their orphaned vectors go too.
+            done_ids, fresh = _incremental(client, coll, repo_url, stamped, sha, len(nodes))
+        if fresh:
+            # No usable diff, or told to start over. Stale vectors keyed by an
+            # unchanged qualified name would otherwise survive forever.
             client.delete_collection(coll)
     if fresh:
         client.create_collection(
