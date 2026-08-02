@@ -63,6 +63,7 @@ TAIL_LINES = 8
 # call scrolled past above it and was gone. These are the lines kept on the
 # RUNNING stage so the window your eye rests on says what is happening now.
 ACTIVITY_LINES = 6
+LOG_LINES = 6           # opening lines of a multi-paragraph agent reply
 TOOL_PREFIX = "→"       # claude_agent formats tool calls as "→ Name: input"
 
 
@@ -157,6 +158,13 @@ class RunView:
         key = self.run_stage.get(run_id) if run_id is not None else None
         return self.stages.get(key) if key else None
 
+    def stage_label(self, run_id: int | None) -> str:
+        """Which stage emitted this event. Five agents write to one scrollback,
+        so without a name the transcript is anonymous — a jury opinion and a Dev
+        tool call look alike once they have scrolled past the timeline."""
+        key = self.run_stage.get(run_id) if run_id is not None else None
+        return STAGE_LABEL.get(key, key or "") if key else ""
+
     # ── rendering ────────────────────────────────────────────────────────────
     def _mark(self, stage: _Stage) -> Text:
         if stage.state == "running":
@@ -174,11 +182,30 @@ class RunView:
         seconds = end - stage.started
         return f"{seconds:5.1f}s"
 
-    def log_line(self, severity: str, message: str) -> Text:
-        """One tail row, styled — shared by the live region and the scrollback
-        above it so a line looks the same wherever it is read."""
-        style = {"error": "err", "warn": "warn"}.get(severity, "muted")
-        return Text(f"  {self.g.vbar} ", style="rule") + Text(message[:400], style=style)
+    def log_line(self, severity: str, message: str, stage: str = "") -> RenderableType:
+        """One log row, styled — shared by the live region and the scrollback
+        above it so a line looks the same wherever it is read.
+
+        A two-column table, not a prefix + string, because a long line has to
+        WRAP rather than be cut, and its continuation has to line up under the
+        first column instead of falling back to the terminal's left edge. It
+        used to be `Text(gutter) + Text(message[:400])`: a juror's paragraph
+        came out as a wall of full-width text starting at column 0, with the
+        gutter appearing once every few lines and no way to tell where one
+        entry ended and the next began.
+        """
+        style = {"error": "err", "warn": "warn", "success": "ok"}.get(severity, "muted")
+        row = Table(box=None, pad_edge=False, show_header=False, padding=(0, 0, 0, 0),
+                    expand=True)
+        row.add_column(width=10, no_wrap=True, justify="right")   # stage
+        row.add_column(width=3, no_wrap=True)                     # gutter
+        row.add_column(overflow="fold", ratio=1)                  # the message, wrapped
+        row.add_row(
+            Text(stage or "", style="brand.dim"),
+            Text(f" {self.g.vbar} ", style="rule"),
+            Text(message, style=style),
+        )
+        return row
 
     def renderable(self, *, include_tail: bool = True) -> RenderableType:
         self.tick += 1
@@ -285,9 +312,14 @@ def watch(console: Console, g: theme.Glyphs, unicode: bool, work: threading.Thre
                         kind, payload = inbox.get(timeout=1 / refresh_hz)
                         view.apply(kind, payload)
                         if kind == "run.log":
-                            for line in _log_rows(payload):
+                            stage = view.stage_label(payload.get("run_id"))
+                            for i, line in enumerate(_log_rows(payload)):
+                                # Name the stage once per entry, not per wrapped
+                                # line — repeating it is what made the old log
+                                # read as noise rather than a transcript.
                                 live.console.print(view.log_line(
-                                    payload.get("severity") or "info", line))
+                                    payload.get("severity") or "info", line,
+                                    stage=stage if i == 0 else ""))
                     except queue.Empty:
                         pass
                     live.update(view.renderable(include_tail=False))
@@ -299,13 +331,23 @@ def watch(console: Console, g: theme.Glyphs, unicode: bool, work: threading.Thre
 
 
 def _log_rows(payload: dict) -> list[str]:
-    """The printable lines of one log event, matching what ``apply`` keeps.
+    """The printable lines of one log event.
 
-    Capped the same way, so the scrollback and the view never disagree about
-    what an agent said.
+    A full QA verdict or jury opinion is several paragraphs, and dumping all of
+    it inline is what turned the run into a wall of prose with the timeline
+    buried somewhere above. Keep the opening lines — the verdict is always in
+    them — and say how much was withheld and where to read it, rather than
+    stopping mid-sentence and leaving the reader unsure whether the agent was
+    cut off or had finished.
     """
     message = (payload.get("message") or "").strip()
-    return [ln.strip() for ln in message.splitlines()[:4] if ln.strip()] if message else []
+    if not message:
+        return []
+    lines = [ln.strip() for ln in message.splitlines() if ln.strip()]
+    if len(lines) <= LOG_LINES:
+        return lines
+    return [*lines[:LOG_LINES],
+            f"… {len(lines) - LOG_LINES} more line(s) — /review for the full text"]
 
 
 # ── Watching a knowledge-base build ───────────────────────────────────────────

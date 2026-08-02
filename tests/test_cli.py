@@ -705,3 +705,52 @@ class TestSourceIsReadAsUtf8:
             if re.search(r"\.read_text\(\s*\)", line)
         ]
         assert offenders == [], f"read_text() without encoding: {offenders}"
+
+
+class TestLogRowsAreReadable:
+    """From a real gitea run: the scrollback was a wall of full-width prose
+    starting at column 0, because a log row was `Text(gutter) + Text(msg[:400])`
+    — the gutter printed once and every wrapped continuation fell back to the
+    terminal's left edge, with five agents' output indistinguishable."""
+
+    def _render(self, severity="info", message="x", stage="", width=70):
+        from app.cli import live, theme
+
+        view = live.RunView(theme.Glyphs(True), True)
+        console = theme.console(width=width, no_color=True)
+        with console.capture() as cap:
+            console.print(view.log_line(severity, message, stage=stage))
+        return cap.get().rstrip("\n").split("\n")
+
+    def test_wrapped_lines_hang_under_the_gutter(self):
+        lines = self._render(message="w " * 80, stage="Review")
+        assert len(lines) > 1, "a long message must wrap, not be cut"
+        gutter = lines[0].index("│")
+        for cont in lines[1:]:
+            # Continuations start past the gutter column, not at column 0.
+            assert cont[:gutter].strip() == "", f"continuation not indented: {cont!r}"
+
+    def test_the_stage_names_the_entry(self):
+        assert "Review" in self._render(stage="Review", message="a verdict")[0]
+
+    def test_nothing_is_cut_mid_word(self):
+        """The old 400-char slice ended sentences mid-token, so a reader could
+        not tell a truncated agent from a terminated one."""
+        message = "supercalifragilistic " * 40
+        joined = " ".join(l.split("│", 1)[-1].strip() for l in self._render(message=message))
+        assert "supercalifragilisti " not in joined
+        assert joined.count("supercalifragilistic") == 40
+
+    def test_a_long_reply_says_how_much_it_withheld(self):
+        from app.cli import live
+
+        rows = live._log_rows({"message": "\n".join(f"line {i}" for i in range(30))})
+        assert len(rows) == live.LOG_LINES + 1
+        assert "24 more line(s)" in rows[-1]
+        assert "/review" in rows[-1], "the reader needs somewhere to go for the rest"
+
+    def test_a_short_reply_is_left_whole(self):
+        from app.cli import live
+
+        rows = live._log_rows({"message": "one\ntwo\nthree"})
+        assert rows == ["one", "two", "three"]
