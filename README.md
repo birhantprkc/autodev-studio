@@ -1,11 +1,12 @@
 <div align="center">
 
-<img src="docs/screenshots/cli-hero.svg" alt="CodeJury — a session in the terminal: the PM agent scoping a change, then the pipeline streaming Planner → Dev → QA → jury" width="900">
+<img src="docs/screenshots/cli-session.gif" alt="CodeJury — a recorded session in the terminal: the PM agent scoping a change, then the pipeline streaming Planner → Dev → QA → jury" width="900">
 
-<sub>One session, start to finish: describe a bug, the PM agent interrogates the
-requirement, then Planner → Dev → QA → jury streams live with per-stage model,
-time and cost. Rendered by the CLI's own renderers — see
-[`docs/capture_hero.py`](docs/capture_hero.py).</sub>
+<sub>A real session against <a href="https://github.com/Textualize/rich">Textualize/rich</a>,
+recorded and cut to fifteen seconds: describe a bug in plain English, the PM agent
+interrogates the requirement until it can lock it, then Planner → Dev → QA → jury
+streams live with per-stage model, time and cost. Nothing here is a mockup — the
+run took 13 minutes and $1.72, and shipped ticket R-111.</sub>
 
 <br>
 
