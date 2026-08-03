@@ -1,13 +1,13 @@
 <div align="center">
 
-<img src="docs/screenshots/cli-session.gif" alt="CodeJury — a recorded session in the terminal: the PM agent scoping a change, then the pipeline streaming Planner → Dev → QA → jury" width="900">
+<img src="docs/screenshots/cli-session.gif" alt="CodeJury in the terminal: which model owns each stage, an indexed repository, a request as tickets, the Planner's verified plan, and a four-judge jury with each juror's verdict" width="900">
 
-<sub>A real session against <a href="https://github.com/Textualize/rich">Textualize/rich</a>:
-describe a bug in plain English, the PM agent interrogates the requirement until it
-can lock it, then Planner → Dev → QA → jury runs with per-stage model, time and
-cost. Nothing here is a mockup — the run took 13 minutes and $1.49, and shipped
-ticket R-111 on a unanimous jury verdict. Thirteen minutes does not fit in a
-README, so the recording is nine moments from it, each held long enough to read.</sub>
+<sub>One unbroken session against <a href="https://github.com/go-gitea/gitea">go-gitea/gitea</a>
+— Go, TypeScript and templates, 120,521 symbols indexed. Which model owns each of
+the six stages, the request that started it, the ticket it became, the Planner's
+plan pinned to real symbols, then the jury: four judges on four different
+providers, each with its own verdict, one of them dissenting. Every screen is
+real state from a delivery that actually ran; nothing here is a mockup.</sub>
 
 <br>
 
@@ -731,6 +731,20 @@ See **[CONTRIBUTING.md](CONTRIBUTING.md)** and **[SECURITY.md](SECURITY.md)**.
 - A pluggable agent graph for richer branching and parallelism.
 
 ---
+
+## How this repository was built
+
+Roughly 90% of the code here was written by CodeJury itself. I'd rather say that
+up front than have you work it out from the commit history, and honestly I don't
+understand the instinct to hide it — a tool that builds itself is the most useful
+thing you can know about it.
+
+It wasn't vibe coded, though. Every change went through the same pipeline you see
+at the top of this page: a scope I had to agree to before anything was written, a
+plan pinned to symbols that were checked against the real code, a jury that could
+send it back and sometimes did, and me reading the diff before it landed. The
+agent wrote most of the lines. The decisions about what should exist, and what
+was allowed to ship, were mine.
 
 ## Citation
 
