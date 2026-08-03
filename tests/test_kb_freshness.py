@@ -229,3 +229,77 @@ class TestDenseIndexResumeKeying:
 
         monkeypatch.setattr(embed, "_get_client", FakeClient)
         assert embed.build_inprocess("https://x/repo") == 0
+
+
+class TestReEmbedIsVisible:
+    """A sync must never go silent for minutes.
+
+    Re-embedding is the longest stage of a refresh and the only one with no
+    output of its own — on a 16k-node repo it took 10m44s and printed nothing
+    between "code graph reindexed" and "re-embedded N nodes", which is the exact
+    shape of a hang. These pin the progress reporting that closed that window.
+    """
+
+    def test_progress_is_throttled_but_always_reaches_100(self):
+        from app.services.knowledge import freshness
+
+        lines: list[str] = []
+        report = freshness._embed_reporter(
+            lambda _lvl, msg: lines.append(msg), step=5, min_gap=0.0)
+        for done in range(0, 2001, 40):      # 51 callbacks
+            report(done, 2000)
+
+        assert len(lines) < 25, "a log row per batch would flood the run log"
+        assert "100%" in lines[-1]
+        assert "2,000/2,000 nodes" in lines[-1]
+
+    def test_a_zero_total_reports_nothing(self):
+        """Guards the division: an empty node set must not raise inside a
+        callback the embed subprocess drives."""
+        from app.services.knowledge import freshness
+
+        lines: list[str] = []
+        freshness._embed_reporter(lambda _lvl, msg: lines.append(msg))(5, 0)
+        assert lines == []
+
+    def test_the_interval_floor_suppresses_a_burst(self):
+        from app.services.knowledge import freshness
+
+        lines: list[str] = []
+        report = freshness._embed_reporter(
+            lambda _lvl, msg: lines.append(msg), step=1, min_gap=60.0)
+        report(10, 100)
+        report(50, 100)
+        assert len(lines) == 1
+
+    def test_a_failed_re_embed_says_so(self, monkeypatch, tmp_path):
+        """build() swallows low RAM, a locked store and its own timeout, and
+        returns 0. Silence there would leave 'the slow part of a sync' as the
+        last thing the run ever said."""
+        from app.services.knowledge import embed, freshness, graph, symbol_map, write_back
+
+        monkeypatch.setattr(settings, "kb_auto_refresh", True)
+        monkeypatch.setattr(settings, "knowledge_dir", str(tmp_path))
+        (tmp_path / "clone" / ".git").mkdir(parents=True)
+
+        from app.services import git_ops
+        monkeypatch.setattr(git_ops, "workdir", lambda u: tmp_path / "clone")
+        monkeypatch.setattr(git_ops, "default_branch", lambda p: "main")
+        monkeypatch.setattr(git_ops, "rev_parse", lambda p, r: "newsha00000")
+        monkeypatch.setattr(symbol_map, "load", lambda u: None)
+        monkeypatch.setattr(symbol_map, "build",
+                            lambda u, h: type("S", (), {"files": [], "sha": h,
+                                                        "symbol_count": lambda self: 0})())
+        monkeypatch.setattr(graph, "available", lambda: True)
+        monkeypatch.setattr(graph, "indexed_sha", lambda u: "oldsha")
+        monkeypatch.setattr(graph, "ensure_indexed", lambda u, h: True)
+        monkeypatch.setattr(embed, "available", lambda: True)
+        monkeypatch.setattr(embed, "build", lambda u, on_progress=None: 0)
+        monkeypatch.setattr(write_back, "reconcile_unmerged", lambda *a: 0)
+
+        seen: list[tuple[str, str]] = []
+        out = freshness.refresh_if_stale("https://x/repo",
+                                         on_event=lambda lvl, msg: seen.append((lvl, msg)))
+
+        assert "re_embed_failed" in out["action"]
+        assert any(lvl == "warn" and "previous index" in msg for lvl, msg in seen)

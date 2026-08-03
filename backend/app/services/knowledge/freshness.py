@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from pathlib import Path
 
 from ...config import settings
@@ -55,6 +56,38 @@ def _log(on_event, level: str, msg: str) -> None:
             on_event(level, msg)
         except Exception:  # noqa: BLE001
             pass
+
+
+def _bar(pct: int, width: int = 24) -> str:
+    filled = int(width * max(0, min(100, pct)) / 100)
+    return "█" * filled + "░" * (width - filled)
+
+
+def _embed_reporter(on_event, *, step: int = 5, min_gap: float = 3.0):
+    """A throttled progress line for the re-embed.
+
+    Re-embedding is the one stage of a sync with no output of its own, and it is
+    also the longest — minutes on a large repo, with the model loaded and the CPU
+    pinned. Silence of that shape is indistinguishable from a hang, and reads as
+    one: the run looks wedged right after "code graph reindexed".
+
+    Throttled on a percentage step *and* a floor on the interval, because every
+    line this emits is a row in the run log.
+    """
+    state = {"pct": -step, "at": 0.0}
+
+    def _report(done: int, total: int) -> None:
+        if total <= 0:
+            return
+        pct = min(100, int(done * 100 / total))
+        now = time.monotonic()
+        if pct < 100 and (pct < state["pct"] + step or now - state["at"] < min_gap):
+            return
+        state["pct"], state["at"] = pct, now
+        _log(on_event, "info",
+             f"KB: re-embedding  {_bar(pct)} {pct:3d}%   {done:,}/{total:,} nodes")
+
+    return _report
 
 
 def refresh_if_stale(repo_url: str, on_event=None) -> dict:
@@ -106,10 +139,24 @@ def _refresh(repo_url: str, on_event) -> dict:
                 # the graph moves (CPU-only, no API; skipped when the feature is
                 # off or the stack isn't installed).
                 if embed.available():
-                    n = embed.build(repo_url)
+                    # Announced before it starts, not after it finishes: the model
+                    # has to load before the first batch reports, so there is a
+                    # silent head on this stage no progress line can cover.
+                    _log(on_event, "info",
+                         "KB: re-embedding changed nodes — the slow part of a sync")
+                    n = embed.build(repo_url,
+                                    on_progress=_embed_reporter(on_event))
                     if n:
                         _log(on_event, "info", f"KB: re-embedded {n} nodes")
                         actions.append("re_embedded")
+                    else:
+                        # build() swallows its own failures (low RAM, a locked
+                        # store, the timeout) and returns 0. Saying so beats
+                        # letting the announcement above be the last word.
+                        _log(on_event, "warn",
+                             "KB: re-embed produced nothing — semantic search will "
+                             "answer from the previous index until the next sync")
+                        actions.append("re_embed_failed")
             else:
                 _log(on_event, "warn", "KB: code graph reindex failed — "
                                        "falling back to symbol map for this run")
