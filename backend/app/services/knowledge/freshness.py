@@ -74,7 +74,11 @@ def _embed_reporter(on_event, *, step: int = 5, min_gap: float = 3.0):
     Throttled on a percentage step *and* a floor on the interval, because every
     line this emits is a row in the run log.
     """
-    state = {"pct": -step, "at": 0.0}
+    # -inf, not 0.0: time.monotonic() counts from an arbitrary origin, which on
+    # Linux is boot. Against a 0.0 sentinel the first line's interval check reads
+    # "has the machine been up longer than min_gap" — so on a fresh CI runner the
+    # opening 0% was swallowed and on a laptop it was not.
+    state = {"pct": -step, "at": float("-inf")}
 
     def _report(done: int, total: int) -> None:
         if total <= 0:

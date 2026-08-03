@@ -272,6 +272,19 @@ class TestReEmbedIsVisible:
         report(50, 100)
         assert len(lines) == 1
 
+    def test_the_first_line_survives_a_freshly_booted_machine(self, monkeypatch):
+        """time.monotonic() counts from boot on Linux, so a 0.0 sentinel made the
+        opening progress line conditional on the host's uptime — it appeared on a
+        laptop and vanished on a CI runner that had been up for eight seconds."""
+        from app.services.knowledge import freshness
+
+        monkeypatch.setattr(freshness.time, "monotonic", lambda: 8.0)
+        lines: list[str] = []
+        freshness._embed_reporter(
+            lambda _lvl, msg: lines.append(msg), min_gap=60.0)(0, 16032)
+        assert len(lines) == 1
+        assert "0/16,032 nodes" in lines[0]
+
     def test_a_failed_re_embed_says_so(self, monkeypatch, tmp_path):
         """build() swallows low RAM, a locked store and its own timeout, and
         returns 0. Silence there would leave 'the slow part of a sync' as the
