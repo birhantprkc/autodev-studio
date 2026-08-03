@@ -349,3 +349,148 @@ class TestRetrievalIsNotRepeated:
         assert len(excludes) == 2
         assert excludes[0] is excludes[1], "one set must span the rounds"
         assert "hit-for-one" in excludes[1], "round 2 must know what round 1 showed"
+
+
+class TestCriterionCoverage:
+    """A plan can be right about everything it covers and still deliver half the
+    scope.
+
+    From a live gitea run: a five-criterion scope whose three plan steps
+    addressed criteria 1-2 and never mentioned 3-5 (grouping, sort order and
+    filter-exclusion of pinned issues). The Planner had noticed them — it listed
+    the missing behaviour verbatim under `tests.new_cases` — but a test case is
+    not an implementation step, so nothing was built. Dev implemented the plan
+    faithfully, and QA plus four jurors approved two fifths of the ask.
+    """
+
+    SCOPE = {"acceptance_criteria": [
+        "Users with manage-issues permission can pin and unpin issues from both the "
+        "issue detail page and inline from the issue list",
+        "Each repository can have a maximum of 3 pinned issues; attempting to pin a "
+        "4th issue displays an error",
+        "When viewing an issue list, pinned issues that match the active filters "
+        "appear grouped at the top, above non-pinned matching issues",
+        "Within the pinned group and non-pinned group separately, issues are ordered "
+        "according to the active sort order",
+        "Pinned issues that do not match the active filters are excluded from the "
+        "list view",
+    ]}
+
+    # The three steps that plan actually produced, trimmed to their intents.
+    STEPS = [
+        {"intent": "Confirm the permission check on pin/unpin API and web handlers is "
+                   "exactly manage-issues (CanWrite(unit.TypeIssues)) and add it if "
+                   "PinIssue/UnpinIssue/IssuePinOrUnpin lack an explicit check",
+         "why": "the criteria require a non-manage-issues user to get an authorization "
+                "error on pin/unpin from the detail page and the list"},
+        {"intent": "Confirm MaxPinned is set to 3 and that PinIssue's limit check returns "
+                   "a distinguishable ErrIssueMaxPinReached surfaced as a user-readable "
+                   "400 message",
+         "why": "pinning a 4th issue must error with a readable message"},
+        {"intent": "Confirm pin/unpin controls in templates are gated on manage-issues "
+                   "permission rather than IsRepoAdmin",
+         "why": "manage-issues users who aren't repo admins should see pin controls"},
+    ]
+
+    def test_it_finds_the_criteria_that_plan_really_missed(self):
+        from app.services import planner
+
+        gaps = planner.coverage_gaps(self.SCOPE, {"steps": self.STEPS})
+        assert gaps == self.SCOPE["acceptance_criteria"][2:], (
+            "expected exactly the grouping/sort/filter criteria to be flagged")
+
+    def test_it_does_not_flag_a_criterion_a_step_covers(self):
+        """The 3-pin criterion is covered by step 2 — in code vocabulary. Nothing
+        in it repeats the criterion's words: `maximum` has to reach `MaxPinned`
+        and `error` has to reach `ErrIssueMaxPinReached`, or this is a false
+        positive on a plan that is doing its job."""
+        from app.services import planner
+
+        gaps = planner.coverage_gaps(self.SCOPE, {"steps": self.STEPS})
+        assert self.SCOPE["acceptance_criteria"][1] not in gaps
+
+    def test_a_plan_that_covers_everything_is_silent(self):
+        from app.services import planner
+
+        steps = [*self.STEPS, {
+            "intent": "Filter and sort the pinned group by the active filters and sort "
+                      "order, excluding pinned issues that do not match",
+            "why": "pinned issues grouped at the top above non-pinned matching issues",
+            "files": ["routers/web/repo/issue_list.go"],
+            "symbols": ["GetPinnedIssues"],
+            "verify": ["a filtered list view excludes non-matching pinned issues"]}]
+        assert planner.coverage_gaps(self.SCOPE, {"steps": steps}) == []
+
+    def test_the_tests_block_does_not_count_as_coverage(self):
+        """The exact shape of the miss: the behaviour named under `tests.new_cases`
+        and nowhere in the steps. Counting it would score that plan as complete."""
+        from app.services import planner
+
+        plan = {"steps": self.STEPS, "tests": {"new_cases": [
+            "issue list groups pinned issues matching active filters above non-pinned, "
+            "each sub-group ordered by the active sort, and excludes a pinned issue "
+            "that fails the active filter"]}}
+        assert len(planner.coverage_gaps(self.SCOPE, plan)) == 3
+
+    def test_it_stays_quiet_when_it_cannot_know(self):
+        from app.services import planner
+
+        assert planner.coverage_gaps({}, {"steps": self.STEPS}) == []
+        assert planner.coverage_gaps(self.SCOPE, {"steps": []}) == []
+        assert planner.coverage_gaps({}, {}) == []
+
+    def test_dev_is_told_which_criteria_have_no_step(self):
+        from app.services import planner
+
+        prompt = planner.as_prompt({
+            "steps": [{"id": 1, "edit_kind": "modify", "intent": "do a thing"}],
+            "uncovered_criteria": ["pinned issues are excluded when they fail the filter"]})
+        assert "NO step above" in prompt
+        assert "pinned issues are excluded when they fail the filter" in prompt
+
+
+class TestTruncationIsLabelled:
+    """QA reported a complete test file as "cut off mid-assertion — MakeRequest(t,
+    with no closing paren" and raised it as a finding. The paren was in the file,
+    9,000 characters in: the prompt was truncated, not the code. Every block a
+    judge reads has to say when it was cut."""
+
+    def test_a_cut_names_itself(self):
+        from app.services.prompts import clip
+
+        long = "".join(f"line {i} of the diff\n" for i in range(2000))
+        out = clip(long, 500)
+        assert "DISPLAY CUT" in out
+        assert "not the end of the code" in out
+
+    def test_it_cuts_on_a_line_boundary(self):
+        """Half a line of Go reads exactly like the truncated assertion QA
+        invented a finding about."""
+        from app.services.prompts import clip
+
+        long = "".join(f"line {i} of the diff\n" for i in range(2000))
+        assert clip(long, 507).split("[...")[0].endswith("\n")
+
+    def test_text_within_budget_is_untouched(self):
+        from app.services.prompts import clip
+
+        assert clip("a\nb\n", 4000) == "a\nb\n"
+        assert clip("", 10) == ""
+
+    def test_every_judge_facing_prompt_labels_its_cut(self):
+        import inspect
+
+        from app.services.jury.prompts import judge_case
+        from app.services.prompts import qa_user, review
+
+        diff = "func TestX(t *testing.T) {\n\tMakeRequest(t, req, 400)\n}\n" * 400
+        assert "DISPLAY CUT" in qa_user("G-1", "t", ["c"], diff, "out")
+        assert "DISPLAY CUT" in review("G-1", ["c"], diff)
+        kwargs = dict.fromkeys(inspect.signature(judge_case).parameters, "")
+        kwargs["diff"] = diff
+        assert "DISPLAY CUT" in judge_case(**kwargs)
+
+    def test_truncated_test_output_is_labelled_as_test_output(self):
+        from app.services.prompts import qa_user
+
+        assert "test output omitted" in qa_user("G-1", "t", ["c"], "d", "x" * 5000)

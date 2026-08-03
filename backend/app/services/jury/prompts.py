@@ -11,6 +11,7 @@ delivery.
 from __future__ import annotations
 
 from ...config import settings
+from ..prompts import clip
 
 # Budgets. The diff is the expensive part and every juror pays for it, so it is
 # capped harder here than in the single-reviewer prompt.
@@ -129,10 +130,10 @@ def judge_case(task_key: str, title: str, criteria: list[str], diff: str,
                        "against the diff rather than believing it):",
                    dev_summary.strip()[:DEV_SUMMARY_CHARS]]
     if test_output.strip():
-        blocks += ["", "Test run output:", "```", test_output.strip()[:2500], "```"]
+        blocks += ["", "Test run output:", "```", clip(test_output.strip(), 2500, 'test output'), "```"]
     if alerts.strip():
         blocks += ["", alerts.strip()]
-    blocks += ["", "The implementation under review:", "```diff", diff[:DIFF_CHARS], "```"]
+    blocks += ["", "The implementation under review:", "```diff", clip(diff, DIFF_CHARS), "```"]
     return "\n".join(blocks)
 
 

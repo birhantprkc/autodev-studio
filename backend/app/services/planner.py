@@ -36,6 +36,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections import Counter
 from pathlib import Path
 
 from ..config import settings
@@ -232,6 +233,11 @@ def plan(repo_url: str, workdir: str, scope: dict, tickets: list[dict] | None = 
                     "error": err or "planner returned no plan"}
 
         verified = verify_plan(repo_url, workdir, _normalize(raw))
+        gaps = coverage_gaps(scope, verified)
+        if gaps:
+            verified["uncovered_criteria"] = gaps
+            log("warn", f"Planner: {len(gaps)} acceptance criterion/criteria have no "
+                        "step in this plan — " + "; ".join(g[:120] for g in gaps))
         log("success", describe(verified))
         return {"plan": verified, "rounds": round_no, "retrieved": retrieved,
                 "tokens_in": tin, "tokens_out": tout, "cost": cost, "error": err}
@@ -405,6 +411,93 @@ def verify_plan(repo_url: str, workdir: str, plan_obj: dict) -> dict:
     return plan_obj
 
 
+# --- Criterion coverage -------------------------------------------------------
+# A plan can be entirely correct about what it covers and still deliver half the
+# scope. Observed: a five-criterion scope where the plan's three steps addressed
+# criteria 1-2 and never mentioned 3-5. The Planner had noticed them — it listed
+# the missing behaviour verbatim under `tests.new_cases` — but a test case is not
+# an implementation step, so nothing was built, and Dev, QA and four jurors all
+# approved a change that met two fifths of what was asked.
+#
+# Hence: match criteria against STEPS ONLY. Counting the tests block would have
+# scored that plan as fully covered, which is precisely the mistake being caught.
+
+_COVERAGE_STOP = frozenset((
+    "about", "above", "after", "again", "against", "also", "because", "been",
+    "before", "being", "below", "between", "both", "does", "doing", "during",
+    "each", "else", "from", "further", "have", "here", "into", "itself", "more",
+    "most", "only", "other", "over", "same", "some", "such", "than", "that",
+    "then", "there", "these", "they", "this", "those", "through", "under",
+    "until", "very", "were", "what", "when", "where", "which", "while", "with",
+    "within", "would", "your", "must", "should", "shall", "able", "allow",
+    "allows", "user", "users", "given",
+))
+
+
+def _split_identifiers(text: str) -> str:
+    """MaxPinned -> Max Pinned, issue_pin.go -> issue pin go.
+
+    Criteria are written in user language and steps in code, so the two sides
+    only meet once identifiers are broken into words: without this, the criterion
+    "a maximum of 3 pinned issues" shares nothing with the step that verifies
+    `MaxPinned` and `ErrIssueMaxPinReached`.
+    """
+    return re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", text or "").replace("_", " ").replace(".", " ")
+
+
+def _terms(text: str, minimum: int = 4) -> set[str]:
+    return {w for w in re.findall(r"[a-z][a-z]+", _split_identifiers(text).lower())
+            if len(w) >= minimum and w not in _COVERAGE_STOP}
+
+
+def _hit(term: str, covered: set[str]) -> bool:
+    """Prefix matching in both directions — the cheapest stemmer that works on
+    the pairs that actually occur: maximum/max, error/err, ordered/order."""
+    return any(term.startswith(c) or c.startswith(term) for c in covered)
+
+
+def coverage_gaps(scope: dict, plan_obj: dict, threshold: float = 0.34) -> list[str]:
+    """Acceptance criteria that no plan step appears to address.
+
+    Deliberately dumb and deterministic — term overlap, no model call, no cost.
+    A term shared by most of the criteria ("issue", "pinned" in a pinning scope)
+    says nothing about which one a step is for, so scoring uses each criterion's
+    *distinctive* terms: the ones that are not spread across half the set.
+
+    Advisory, not a veto. It reports what to look at; the decision to block
+    belongs to a human at /approve, and a wrong guess here must never be able to
+    stop a correct plan.
+    """
+    criteria = [c for c in (scope.get("acceptance_criteria") or []) if str(c).strip()]
+    steps = plan_obj.get("steps") or []
+    if not criteria or not steps:
+        return []
+
+    per = [_terms(c) for c in criteria]
+    spread = Counter(t for terms in per for t in terms)
+    common = max(1, len(criteria) // 2)
+
+    # Three characters on the plan side: `max` has to be able to answer
+    # `maximum`. Four on the criterion side, so short filler words never become
+    # the thing a criterion is judged by.
+    covered = set()
+    for s in steps:
+        for field in ("intent", "why"):
+            covered |= _terms(s.get(field) or "", minimum=3)
+        for field in ("files", "symbols", "verify"):
+            covered |= _terms(" ".join(s.get(field) or []), minimum=3)
+
+    gaps = []
+    for criterion, terms in zip(criteria, per, strict=False):
+        distinctive = {t for t in terms if spread[t] <= common} or terms
+        if not distinctive:
+            continue
+        hit = sum(1 for t in distinctive if _hit(t, covered))
+        if hit / len(distinctive) < threshold:
+            gaps.append(criterion)
+    return gaps
+
+
 # --- Rendering ----------------------------------------------------------------
 
 def describe(plan_obj: dict) -> str:
@@ -451,6 +544,15 @@ def as_prompt(plan_obj: dict) -> str:
                          + ", ".join(s["existing_tests"]))
         if s.get("verify"):
             lines.append(f"    done when: {'; '.join(s['verify'])}")
+    if plan_obj.get("uncovered_criteria"):
+        # Dev is the last stage that can still add work. Below this point the
+        # remaining gates only judge the diff that exists, and a criterion nobody
+        # implemented leaves no trace in a diff for them to judge.
+        lines.append(
+            "\nAcceptance criteria with NO step above (a deterministic check, not the "
+            "Planner's opinion — the plan may simply have missed these). Implement them "
+            "too, or state plainly in your summary why each needs no code:\n"
+            + "\n".join(f"    - {c}" for c in plan_obj["uncovered_criteria"]))
     if plan_obj.get("risks"):
         lines.append("\nRisks the Planner flagged: " + "; ".join(plan_obj["risks"]))
     if plan_obj.get("open_questions"):

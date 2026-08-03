@@ -162,7 +162,7 @@ Acceptance criteria:
 
 Git diff:
 ```diff
-{diff[:12000]}
+{clip(diff, 12000)}
 ```
 
 Calibrate the verdict — every CHANGES REQUESTED triggers a full paid Dev+QA+Review round:
@@ -223,6 +223,34 @@ REVIEW_SYSTEM = (
 )
 
 
+def clip(text: str, limit: int, what: str = "the diff") -> str:
+    """Cut `text` to the context budget and SAY that it was cut.
+
+    A bare slice ends wherever the budget runs out — mid-line, mid-token — and a
+    reviewer reading the tail cannot tell a display cut from code that genuinely
+    stops there. It does not guess conservatively either: it reports.
+
+    Observed on a live run: QA raised a finding that a test was "cut off
+    mid-assertion — `MakeRequest(t,` with no closing paren", and asked for
+    coverage that was already written. The paren was in the file, 9,000
+    characters in. The code was complete; the prompt was not.
+
+    So the cut lands on a line boundary, and what follows names itself as a
+    budget cut rather than leaving the reader to infer one.
+    """
+    text = text or ""
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    at_line = cut[:cut.rfind("\n") + 1]
+    cut = at_line or cut
+    return cut + (
+        f"\n[... {len(text) - len(cut):,} more characters of {what} omitted to fit the "
+        "context budget. This is a DISPLAY CUT, not the end of the code: anything below "
+        "this point is unseen, not missing. Do not report it as truncated, incomplete or "
+        "absent — if you need it, read the file.]")
+
+
 QA_SYSTEM = (
     "You are a senior QA engineer. You are deliberately from a DIFFERENT model provider "
     "than the engineer who wrote this code, to provide an unbiased second opinion. Be "
@@ -239,12 +267,12 @@ Acceptance criteria:
 
 Test output:
 ```
-{test_output[:3000]}
+{clip(test_output, 3000, 'test output')}
 ```
 
 Code change (git diff):
 ```diff
-{diff[:9000]}
+{clip(diff, 9000)}
 ```
 
 Respond with:
