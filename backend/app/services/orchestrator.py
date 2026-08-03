@@ -29,7 +29,6 @@ from ..models import (
 from . import (
     agent_backends,
     agent_runner,
-    deepwiki,
     events,
     git_ops,
     jury,
@@ -40,6 +39,7 @@ from . import (
     precision,
     prompts,
     providers,
+    rag,
     search,
 )
 from .knowledge import freshness, graph, symbol_map, write_back
@@ -88,7 +88,7 @@ def _kb_context(repo_url: str, info: dict, on_event=None) -> str:
     """Feed the Dev agent the RIGHT knowledge for this task: a use-case-scoped,
     token-budgeted slice from Deep Analysis (with exact source files), so Claude
     goes straight to the right files instead of grepping the whole repo. Falls
-    back to a focused DeepWiki ask when the analysis isn't available."""
+    back to a focused knowledge-base ask when the analysis isn't available."""
     if not repo_url:
         return ""
     query = f"{info.get('title', '')}: {info.get('description', '')}"
@@ -104,14 +104,14 @@ def _kb_context(repo_url: str, info: dict, on_event=None) -> str:
             return ctx
     except Exception:  # noqa: BLE001
         pass
-    # Fallback: focused DeepWiki ask.
+    # Fallback: focused knowledge-base ask.
     try:
-        ctx = deepwiki.ask(repo_url, [{"role": "user", "content": (
+        ctx = rag.ask(repo_url, [{"role": "user", "content": (
             f"For implementing '{info['title']}: {info.get('description', '')}', list the specific "
             "repository files and functions that must change and how they currently work. "
             "Be concise and cite exact file paths.")}], timeout=150)
         if on_event and ctx:
-            on_event("info", f"KB context ({len(ctx)} chars, DeepWiki fallback)")
+            on_event("info", f"KB context ({len(ctx)} chars, knowledge-base fallback)")
         return ctx
     except Exception:  # noqa: BLE001
         return ""

@@ -573,13 +573,9 @@ drift.
 
 ### Other ways to run
 
-- **Web UI (optional)** — `codejury serve` (or `./run.sh serve`), then
-  <http://localhost:8017>: a Kanban delivery board, streamed logs, cookie
-  sessions with `admin`/`member`/`viewer` roles enforced server-side. Same
-  database, same use-case layer — both surfaces are thin adapters over one
-  implementation. `/serve` starts it alongside your shell session.
-- **Docker** — `docker compose up --build` serves the web UI;
-  `docker compose run --rm codejury codejury` gives you the shell in a container.
+- **Docker** — `docker compose run --rm app` gives you the shell in a container.
+  Run it attached: CodeJury is a terminal program, so there is nothing to visit
+  and nothing to publish a port for.
 - **Extras** — `[semantic]` local dense embeddings (drop it for keyword-only
   retrieval), `[treesitter]` exact parse trees for JS/TS/Go/Rust/Java/Ruby
   (Python is exact either way via stdlib `ast`), `[rerank]` a local cross-encoder
@@ -588,28 +584,6 @@ drift.
 > The knowledge base uses free local embeddings in an embedded Qdrant DB — no API
 > key, no Docker. The first ingest downloads a ~90 MB model once. Set
 > `RAG_EMBEDDINGS=tfidf` to skip embeddings entirely.
-
-<details>
-<summary>The optional web board (screenshots)</summary>
-
-<br>
-
-Tickets flow Backlog → Scoped → Approved → Dev → QA → Review → PR, with failed
-or inconclusive deliveries held in Blocked, and live token/cost totals in the
-header. Hand-rolled design system, zero CDN, dark
-**and** light themes.
-
-![The delivery board](docs/screenshots/board-dark.png)
-
-| Agents — live pipeline + streamed output | Costs — real per-ticket, per-agent accounting |
-|:--:|:--:|
-| ![Agents](docs/screenshots/agents-dark.png) | ![Costs](docs/screenshots/costs-dark.png) |
-| **Knowledge — repos & their knowledge bases** | **Settings — any provider, any model, per stage** |
-| ![Knowledge](docs/screenshots/knowledge-dark.png) | ![Settings](docs/screenshots/settings-dark.png) |
-
-![Board in light mode](docs/screenshots/board-light.png)
-
-</details>
 
 ---
 
@@ -632,7 +606,7 @@ header. Hand-rolled design system, zero CDN, dark
 | **No silent green** | QA sees a diff and the test output, so "no failures" and "the suite never ran" look identical. A suite that times out or is missing is announced as such, and the stored verdict is stamped `NO TEST SIGNAL` — it reaches the board, the PR body and the knowledge write-back saying it was never verified. |
 | **Language-agnostic** | Symbol extraction, edit-time syntax gates and test running all dispatch through one language registry — Python (exact `ast`), JS/TS, Go, Rust, Java, Ruby. Unsupported languages fail open rather than breaking the run. A manifest alone does not decide the ecosystem: polyglot repos carry them for *tooling* (gitea ships a `pyproject.toml` pinning three Python linters and zero `.py` files), so the source has to be there too. |
 | **Trivial fast path** | Deterministic triage skips LLM QA and Review on trivially-scoped green-gate changes, so the gate floor doesn't eat small tasks. |
-| **Terminal-native** | A conversation, not a dashboard. Full-screen panels for the three things that need two dimensions — the jury's review, settings, the roster. Real line editing, history and completion. Every command is also a subcommand. |
+| **Terminal-native** | A conversation, not a web app. Full-screen panels for the three things that need two dimensions — the jury's review, settings, the roster. Real line editing, history and completion. Every command is also a subcommand. |
 | **Honest cost accounting** | Real tokens, cost and duration per agent run, read from each backend's own meter, rolled up per ticket/scope/agent. Backends that report tokens but not dollars say so rather than showing a fake $0.00. |
 | **Runtime settings** | Keys, per-stage models, loop bounds, demo mode, Jira — all editable live, no restart. The settings UI is *generated* from one field spec so terminal and web can't drift. Keys encrypted at rest (Fernet). |
 | **Degrades instead of breaking** | No graph binary → symbol map. No embeddings → TF-IDF. No ripgrep → `git grep`. No Jira → a no-op. Runs fully offline, zero-CDN, on a free-tier key. |
@@ -654,16 +628,14 @@ ingest repo → build knowledge base (code graph + embeddings + views)
 ```
 
 The pipeline runs on a worker thread and records everything to SQLite — that is
-the durable record, and it is what a rejoined session or the web board reads
-back. It *also* publishes to an in-process event bus, so the terminal client
+the durable record, and it is what a rejoined session reads back. It *also* publishes to an in-process event bus, so the terminal client
 follows a run as it happens instead of polling a database for something that
 happened in the thread next to it.
 
 **It's a system, not a prompt wrapper:** a real state machine with explicit SDLC
 lanes and a bounded revise loop, not a chain of `if`s. Conservative verdict
-parsing, so an unreviewed change can't slip through looking clean. Auth required
-everywhere but the login page, roles enforced server-side, keys encrypted at
-rest. Demo mode dry-runs delivery until you opt in. And the structured views take
+parsing, so an unreviewed change can't slip through looking clean. Provider keys
+encrypted at rest. Demo mode dry-runs delivery until you opt in. And the structured views take
 their *facts* from static analysis, letting the LLM supply only interpretation —
 so the map the agents navigate by is anchored to real code.
 
@@ -710,7 +682,6 @@ See **[CONTRIBUTING.md](CONTRIBUTING.md)** and **[SECURITY.md](SECURITY.md)**.
 | Area | Stack |
 |---|---|
 | Terminal client | Python, **Rich** (rendering), **prompt_toolkit** (input, history, completion), **Textual** (full-screen panels) |
-| Web UI + API | **FastAPI**, Uvicorn, Jinja2 SSR, vanilla JS, hand-rolled CSS design system (dark/light, zero CDN) |
 | Data | **SQLModel** (SQLAlchemy + Pydantic) over SQLite |
 | Auth | Cookie sessions, PBKDF2 (stdlib), role-based access control, Fernet encryption at rest |
 | LLMs | Five headless coding CLIs (Claude Code, Codex, Cursor, Aider, Gemini CLI), the Anthropic Messages API, and any OpenAI-compatible Chat Completions endpoint |
@@ -726,7 +697,6 @@ See **[CONTRIBUTING.md](CONTRIBUTING.md)** and **[SECURITY.md](SECURITY.md)**.
 - Automatic team selection from a handful of labelled reviews, per the paper's
   ~50% cost cut.
 - Swap the in-process thread pool for a durable queue (Celery / RQ / Arq).
-- WebSocket/SSE streaming to the web UI instead of polling.
 - Sandboxed test execution (containers) for untrusted repos.
 - A pluggable agent graph for richer branching and parallelism.
 

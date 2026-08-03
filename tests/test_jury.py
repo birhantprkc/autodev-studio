@@ -514,38 +514,3 @@ def test_an_empty_panel_is_inconclusive_not_approved(db: Session, monkeypatch):
     assert res["decision"]["verdict"] == "INCONCLUSIVE"
     assert "NOT been code-reviewed" in res["text"]
 
-
-def test_jury_api_roundtrip(admin_client):
-    r = admin_client.get("/api/jury")
-    assert r.status_code == 200
-    view = r.json()
-    assert view["enabled_count"] == 4
-    assert len(view["judges"]) == len(personas.PERSONAS)
-
-    added = admin_client.post("/api/jury/judges", json={
-        "persona": "custom", "name": "Docs", "focus": "Public API docs must match the code."})
-    assert added.status_code == 200
-    judge = next(j for j in added.json()["judges"] if j["name"] == "Docs")
-
-    off = admin_client.patch(f"/api/jury/judges/{judge['id']}", json={"enabled": False})
-    assert next(j for j in off.json()["judges"] if j["id"] == judge["id"])["enabled"] is False
-
-    dropped = admin_client.delete(f"/api/jury/judges/{judge['id']}")
-    assert all(j["id"] != judge["id"] for j in dropped.json()["judges"])
-
-
-def test_jury_api_rejects_an_unknown_persona(admin_client):
-    r = admin_client.post("/api/jury/judges", json={"persona": "vibes", "name": "V"})
-    assert r.status_code == 422
-
-
-def test_jury_writes_require_admin(client, db):
-    from app.models import User
-    from app.services import auth
-
-    db.add(User(username="viewer1", password_hash=auth.hash_password("pw-viewer-1234"),
-                role="viewer"))
-    db.commit()
-    client.post("/auth/login", json={"username": "viewer1", "password": "pw-viewer-1234"})
-    assert client.get("/api/jury").status_code == 200          # reading is fine
-    assert client.post("/api/jury/reset").status_code == 403

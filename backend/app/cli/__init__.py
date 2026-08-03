@@ -4,7 +4,7 @@ Bare ``codejury`` opens the interactive shell. Everything the shell can do is
 also reachable as a subcommand, because a tool that only works when a human is
 watching can't be put in a Makefile or a CI job.
 
-The previous entry point started a web server; that is now ``codejury serve``.
+CodeJury is the terminal client; there is no other surface.
 """
 
 from __future__ import annotations

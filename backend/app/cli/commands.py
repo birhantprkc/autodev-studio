@@ -573,23 +573,6 @@ def cmd_costs(shell: Shell, args: str) -> None:
 
 
 # ── shell meta ────────────────────────────────────────────────────────────────
-@command("/serve", "[--port N]", "Start the web UI alongside this session")
-def cmd_serve(shell: Shell, args: str) -> None:
-    import shlex
-
-    from .serve import start_background_server
-
-    port = 8017
-    tokens = shlex.split(args)
-    for i, tok in enumerate(tokens):
-        if tok in ("--port", "-p") and i + 1 < len(tokens):
-            port = int(tokens[i + 1])
-    url = start_background_server(port=port)
-    shell.print(render.success(f"Web UI on {url}", shell.g))
-    shell.print(render.note("it shares this database, so both surfaces see the same work",
-                            shell.g))
-
-
 @command("/clear", "", "Clear the screen", aliases=("/cls",))
 def cmd_clear(shell: Shell, args: str) -> None:
     shell.console.clear()

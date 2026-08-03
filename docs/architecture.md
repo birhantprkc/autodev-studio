@@ -10,12 +10,13 @@ knowledge base built from the target repository.
 
 ```mermaid
 graph TB
-    subgraph Browser["Browser — Jinja SSR + vanilla JS"]
-        UI["Screens: Scope Chat · Board · Agents · Knowledge · Costs · Settings"]
+    subgraph Term["Terminal — Rich renderers + Textual panels"]
+        UI["Screens: scope chat · tickets · plan · delivery · jury review · costs · settings"]
     end
 
-    subgraph App["FastAPI app (:8017)"]
-        Routers["Routers: auth · settings · repos · sessions · tasks · agents · costs · overview"]
+    subgraph App["CodeJury process"]
+        Core["core/ — the use cases the terminal drives"]
+        Tools["tools endpoint (loopback) — the agents' index shim"]
         Orch["orchestrator — Dev → QA → Jury → PR + revise loop"]
         Jury["jury/ — N specialized judges in parallel + foreperson synthesis"]
         BG["background — in-process thread pool"]
@@ -38,12 +39,12 @@ graph TB
     Routers --> Roster
     Agents --> Providers
     Git --> GH
-    Routers --> Jira
+    Core --> Jira
 ```
 
-The frontend is server-rendered Jinja templates plus a small vanilla-JS layer; the
-same FastAPI app serves both the UI and the JSON API. There is no build step and no
-CDN dependency — it runs fully offline.
+The interface is the terminal: Rich renderers for everything that streams, and
+Textual panels for the three views that need two dimensions (the jury review,
+settings, the roster). No build step, no browser, no CDN — it runs fully offline.
 
 ## The pipeline
 
@@ -226,9 +227,10 @@ existing database keeps working across upgrades.
 
 - **`DEMO_MODE` is on by default** — the PR stage is a dry-run that logs the PR it
   *would* open and never pushes, until you explicitly opt in and authenticate `gh`.
-- **Auth is required** for everything except the login page and `/health`; roles
-  (`viewer` < `member` < `admin`) are enforced server-side.
-- **API keys are encrypted at rest** (Fernet) when saved from the Settings screen.
+- **Nothing is served to a browser.** The only socket CodeJury opens is a
+  loopback endpoint for the agents' index shim, authenticated by a per-run token
+  minted in memory; the shim cannot name its own repo or working copy.
+- **API keys are encrypted at rest** (Fernet) when saved from the Settings panel.
 - The agents execute code from cloned repositories, so treat the host accordingly —
   the Docker image runs as a non-root user, and untrusted repos should be sandboxed
   (see [Future work](../README.md)).

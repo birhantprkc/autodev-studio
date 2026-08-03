@@ -88,7 +88,7 @@ ROLE_RANK: dict[str, int] = {"viewer": 0, "member": 1, "admin": 2}
 
 # --- Tables -----------------------------------------------------------------
 class Repo(SQLModel, table=True):
-    """A git repository ingested into a DeepWiki knowledge base."""
+    """A git repository ingested into the knowledge base."""
 
     id: int | None = Field(default=None, primary_key=True)
     name: str

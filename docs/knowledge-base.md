@@ -170,7 +170,7 @@ The whole subsystem degrades rather than fails:
   exact via stdlib `ast`).
 - No LLM key → delivery-note prose uses its deterministic fallback; everything else is
   already LLM-free.
-- External backends (DeepWiki, Deep-Analysis) are optional and off by default.
+- The knowledge base is entirely local: no external service to run or pay for.
 
 ## Where it lives in the code
 

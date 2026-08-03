@@ -53,13 +53,6 @@ def _build_parser() -> argparse.ArgumentParser:
 
     subs = parser.add_subparsers(dest="command", metavar="<command>")
 
-    serve = subs.add_parser("serve", help="start the web UI and JSON API")
-    serve.add_argument("--host", default=os.environ.get("HOST", "127.0.0.1"),
-                       help="interface to bind (default: 127.0.0.1; 0.0.0.0 to expose it)")
-    serve.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8017")),
-                       help="port to listen on (default: 8017)")
-    serve.add_argument("--reload", action="store_true", help="auto-reload on code changes")
-
     ingest = subs.add_parser("ingest", help="index a repository into the knowledge base")
     ingest.add_argument("git_url", help="repository to index")
     ingest.add_argument("--branch", default="main", help="default branch (default: main)")
@@ -132,11 +125,6 @@ def main(argv: list[str]) -> int:
         except PackageNotFoundError:
             print("codejury (development checkout)")
         return 0
-
-    # serve boots the app itself via uvicorn — don't double-initialise here.
-    if args.command == "serve":
-        from .serve import run_foreground
-        return run_foreground(args.host, args.port, args.reload)
 
     try:
         shell = _make_shell(args)

@@ -20,8 +20,12 @@ _TMP = tempfile.mkdtemp(prefix="codejury-tests-")
 os.environ["DATABASE_URL"] = f"sqlite:///{Path(_TMP, 'test.db').as_posix()}"
 os.environ["CODEJURY_SECRET_KEY"] = "test-suite-fixed-key"
 os.environ["REPOS_DIR"] = str(Path(_TMP, "workspace"))
-os.environ["SEED_ON_STARTUP"] = "false"
 os.environ["GENERATE_KNOWLEDGE"] = "false"
+# Installing the shim starts the loopback tools endpoint for real. The suite
+# exercises install() directly, and a uvicorn thread booting mid-test would run
+# the app's lifespan against the test database — which is how seeding the jury
+# roster started leaking between tests.
+os.environ["CODEJURY_NO_TOOLS_SERVER"] = "1"
 os.environ.setdefault("RAG_EMBEDDINGS", "tfidf")
 os.environ.pop("ADMIN_PASSWORD", None)
 os.environ.pop("OPENAI_API_KEY", None)
@@ -53,22 +57,11 @@ def db():
 
 @pytest.fixture
 def client(db):
-    """A TestClient with a signed-in admin. Auth cookies are real; the bootstrap
-    admin is created with a known password so the login flow is exercised."""
+    """A TestClient over the tools endpoint.
+
+    There is no UI and no login: the only thing served is the agents' index
+    endpoint, gated by a per-run token rather than a session."""
     from app.main import app
-    from app.services import auth
     from fastapi.testclient import TestClient
 
-    # Deterministic bootstrap admin.
-    os.environ["ADMIN_PASSWORD"] = "test-admin-pw"
-    auth.ensure_bootstrap_admin(db)
-
-    c = TestClient(app)
-    return c
-
-
-@pytest.fixture
-def admin_client(client):
-    r = client.post("/auth/login", json={"username": "admin", "password": "test-admin-pw"})
-    assert r.status_code == 200, r.text
-    return client
+    return TestClient(app)

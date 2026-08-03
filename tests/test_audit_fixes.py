@@ -131,20 +131,24 @@ class TestNextKey:
 
 # --- Duplicate ingest + CORS --------------------------------------------------
 class TestIngestGuard:
-    def test_duplicate_url_is_409(self, admin_client, monkeypatch):
+    def test_duplicate_url_is_409(self, db, monkeypatch):
+        """Ingesting the same URL twice is refused by the use-case layer, which
+        is where the rule belongs now that there is no HTTP surface in front."""
+        import pytest
+        from app.core import CoreError
+        from app.core import repos as core_repos
         from app.services import background
 
         monkeypatch.setattr(background, "submit", lambda *a, **k: None)
-        r1 = admin_client.post("/repos/ingest",
-                               json={"git_url": "https://github.com/acme/dup"})
-        assert r1.status_code == 201
-        r2 = admin_client.post("/repos/ingest",
-                               json={"git_url": "https://github.com/acme/dup"})
-        assert r2.status_code == 409
+        core_repos.ingest(db, "https://github.com/acme/dup")
+        with pytest.raises(CoreError) as excinfo:
+            core_repos.ingest(db, "https://github.com/acme/dup")
+        assert excinfo.value.status == 409
 
 
 def test_no_cross_origin_credential_echo(client):
-    """The API must never echo an arbitrary Origin back as allowed — that plus
-    allow-credentials is what let any website make cookie-authed calls."""
+    """The tools endpoint must never echo an arbitrary Origin back as allowed.
+    It is loopback-only and token-gated, and a browser has no business reaching
+    it at all."""
     r = client.get("/health", headers={"Origin": "https://evil.example"})
     assert "access-control-allow-origin" not in {k.lower() for k in r.headers}

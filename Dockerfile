@@ -39,17 +39,13 @@ RUN useradd --create-home --uid 10001 codejury \
 USER codejury
 
 ENV PYTHONUNBUFFERED=1 \
-    RAG_BACKEND=local \
     DEMO_MODE=true \
-    SEED_ON_STARTUP=false \
     REPOS_DIR=/workspace \
     HOST=0.0.0.0 \
     PORT=8017
 
-EXPOSE 8017
-HEALTHCHECK --interval=30s --timeout=3s --start-period=20s CMD ["sh", "-c", "curl -fsS http://127.0.0.1:${PORT}/health || exit 1"]
-
-# The container serves the web UI: a detached container has no terminal for the
-# interactive shell, and the healthcheck above needs an HTTP endpoint. To use
-# the shell in Docker, attach one:  docker compose run --rm codejury codejury
-CMD ["codejury", "serve"]
+# CodeJury is an interactive terminal program, so the container needs a terminal:
+#   docker compose run --rm codejury
+# The port below is the agents' loopback index endpoint, started on demand
+# inside the container. It is not a UI and is deliberately not published.
+CMD ["codejury"]

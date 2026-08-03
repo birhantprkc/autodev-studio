@@ -1,21 +1,16 @@
 # CodeJury — single self-contained service.
-#   docker compose up --build   →   http://localhost:8017
+#   docker compose run --rm app
 #
-# The admin password is generated on first boot and printed to the log; read it
-# with `docker compose logs app`, or preset one via ADMIN_PASSWORD below.
+# CodeJury is a terminal program, so run it attached rather than `up -d`: there
+# is nothing to visit in a browser.
 services:
   app:
     build: .
-    ports:
-      - "8017:8017"
     environment:
       # Provide keys here or via a .env file next to this compose file.
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
-      RAG_BACKEND: local
       DEMO_MODE: "true"           # dry-run PRs; set false only for a repo you own
-      SEED_ON_STARTUP: "false"
       # The code-graph engine caches per-repo graphs here; keep them on a volume
       # so repos stay indexed across restarts.
       XDG_CACHE_HOME: /data/cache

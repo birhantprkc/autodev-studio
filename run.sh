@@ -3,9 +3,7 @@
 # CodeJury — one-command local launcher.
 #   ./run.sh               create a venv, install, open the CodeJury shell
 #   ./run.sh doctor        …print a preflight report instead and exit
-#   ./run.sh serve         …start the web UI instead, on :8017
 #   ./run.sh <any args>    …anything else is passed straight to `codejury`
-#   PORT=9000 ./run.sh serve   start the web UI on a different port
 #
 # The app is self-contained; the only external helper is the codebase-memory-mcp
 # code-graph binary (auto-installed below if npm is present; otherwise the KB
@@ -85,15 +83,9 @@ if [ "$FIRST_RUN" = "1" ]; then
   echo
 fi
 
-# No arguments opens the shell. `serve` gets the host/port defaults applied for
-# it, since those are what the environment variables above are for; every other
-# invocation is passed through untouched.
+# No arguments opens the shell; everything else is passed through untouched.
 if [ "$#" -eq 0 ]; then
   exec codejury
-elif [ "$1" = "serve" ]; then
-  shift
-  echo "→ CodeJury → http://${HOST}:${PORT}  (API docs: /docs)"
-  exec codejury serve --host "$HOST" --port "$PORT" "$@"
 else
   exec codejury "$@"
 fi

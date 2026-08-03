@@ -1,88 +1,62 @@
-from contextlib import asynccontextmanager
-from pathlib import Path
+"""The local tools endpoint — not a web app.
 
-from fastapi import Depends, FastAPI, Request
+CodeJury is a terminal program. What survives here is the one thing that has to
+be reachable over a socket rather than a function call: the repository-index
+tools the Dev and jury agents query.
+
+Those agents run as separate processes (a headless coding CLI, sometimes a
+container), so they cannot call into this process directly — and the index
+cannot simply be opened twice, because the vector store is single-writer. So the
+shim installed into the working copy posts here, and this process, which already
+owns the graph and the store, answers. Authentication is a per-run token minted
+in memory; the shim never names its own repo or working directory, the token
+does.
+
+There is no UI, no session cookie and no login: nothing here is meant for a
+person with a browser.
+"""
+
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
 from sqlmodel import Session
 
-from .config import settings
 from .core import CoreError
 from .core import repos as core_repos
 from .database import engine, init_db
-from .routers import (
-    agents,
-    costs,
-    jury,
-    kb_tools,
-    overview,
-    pages,
-    repos,
-    sessions,
-    settings_api,
-    tasks,
-)
-from .routers import auth as auth_router
-from .seed import seed_demo_data
+from .routers import kb_tools
 from .services import judges, runtime_settings
-from .services.auth import ensure_bootstrap_admin, require_user
+from .services.auth import ensure_bootstrap_admin
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
     with Session(engine) as db:
-        ensure_bootstrap_admin(db)       # first boot: admin + generated password (logged once)
-        runtime_settings.apply_overrides(db)  # Settings-screen values over env
-        # After the overrides, so the default panel can be spread across the
-        # providers the operator has actually configured.
+        ensure_bootstrap_admin(db)       # the row a delivered PR is attributed to
+        runtime_settings.apply_overrides(db)
         judges.ensure_seeded(db)
         # Nothing survives the process that ran it, so an `indexing` row here is
         # a corpse, not live work. Same call the terminal client makes at boot.
         core_repos.reconcile_interrupted(db)
-    if settings.seed_on_startup:
-        seed_demo_data()
     yield
 
 
-app = FastAPI(title="CodeJury API", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="CodeJury tools", version="0.1.0", lifespan=lifespan)
 
 
 @app.exception_handler(CoreError)
 def _core_error(request: Request, exc: CoreError) -> JSONResponse:
     """The use-case layer refuses work with a CoreError; its status codes are
-    already HTTP-shaped, so this is the whole translation. Keeps the routers
-    free of try/except and keeps the terminal client and the API reporting the
-    same refusal for the same reason."""
+    already HTTP-shaped, so this is the whole translation."""
     return JSONResponse(status_code=exc.status, content={"detail": exc.message})
 
-# No CORS middleware on purpose: the frontend is served by this same app
-# (same-origin), so cross-origin API access isn't needed — and the previous
-# wildcard-origins-with-credentials config made Starlette echo ANY origin on
-# credentialed requests, undermining the cookie session's CSRF protections.
 
-# /auth handles its own access (login must work signed-out); everything else
-# requires a signed-in user, with member/admin checks on individual routes.
-app.include_router(auth_router.router)
-_authed = [Depends(require_user)]
-app.include_router(overview.router, dependencies=_authed)
-app.include_router(costs.router, dependencies=_authed)
-app.include_router(repos.router, dependencies=_authed)
-app.include_router(sessions.router, dependencies=_authed)
-app.include_router(tasks.router, dependencies=_authed)
-app.include_router(agents.router, dependencies=_authed)
-app.include_router(settings_api.router)
-app.include_router(jury.router)
-# Dev-agent index tools: authenticated by a per-run token minted in-process, so
-# the shim (a separate process) reaches the graph + vector store this one owns.
+# Bound to loopback by the launcher and gated per request by a run token.
 app.include_router(kb_tools.router)
 
 
 @app.get("/health", tags=["meta"])
 def health() -> dict:
     return {"status": "ok"}
-
-
-# Frontend: static assets + HTML screens (mounted last so /api routes win).
-app.mount("/static", StaticFiles(directory=str(Path(__file__).resolve().parent / "static")), name="static")
-app.include_router(pages.router)

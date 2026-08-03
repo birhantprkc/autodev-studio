@@ -13,7 +13,7 @@ import logging
 from sqlmodel import Session, select
 
 from ..models import ChatMessage, MessageRole, Repo, ScopeSession, Task, TaskStatus
-from ..services import background, deepwiki, git_ops, orchestrator, pm_agent, precision
+from ..services import background, git_ops, orchestrator, pm_agent, precision, rag
 from ..services.knowledge import retriever as knowledge_retriever
 from .errors import conflict, not_found, upstream
 
@@ -183,7 +183,7 @@ def draft_tickets(db: Session, session_id: int) -> list[Task]:
         "affected_files": session.affected_files,
     }
     # Ground the tickets in the RIGHT knowledge: a story-scoped slice from Deep
-    # Analysis, falling back to a focused DeepWiki lookup (best-effort).
+    # Analysis, falling back to a focused knowledge-base lookup (best-effort).
     context = ""
     try:
         context = precision.retrieve(session.requirement_summary or "",
@@ -192,7 +192,7 @@ def draft_tickets(db: Session, session_id: int) -> list[Task]:
         context = ""
     if not context:
         try:
-            context = deepwiki.ask(
+            context = rag.ask(
                 repo.git_url,
                 [{"role": "user",
                   "content": f"Which files are most relevant to: {session.requirement_summary}"}],

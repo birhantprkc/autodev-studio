@@ -76,7 +76,6 @@ fail at precise multi-file edits.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `RAG_BACKEND` | `local` | `local` (built-in) or `deepwiki` (external server). |
 | `GRAPH_ENABLED` | `true` | Index each repo into a `codebase-memory-mcp` code graph (localization + structure). Off = symbol-map + `ripgrep` fallback. |
 | `GRAPH_BINARY` | `codebase-memory-mcp` | Binary name on PATH, or an absolute path to it. |
 | `GRAPH_INDEX_MODE` | `full` | `full` (structural + similarity + semantic-embedding edges), `moderate`, or `fast` (structural only). |
@@ -176,7 +175,6 @@ Leave blank to disable. When set, approved tickets can be pushed to a Jira proje
 |---|---|
 | `DATABASE_URL` | SQLite by default; anchored to an absolute path so the launch directory doesn't matter. |
 | `CODEJURY_SECRET_KEY` | Passphrase for Fernet encryption of stored secrets. If unset, a key file (`.secret.key`, chmod 600) is generated at the repo root. |
-| `SEED_ON_STARTUP` | Seed demo data on first boot (off by default). |
 
 > If `CODEJURY_SECRET_KEY` and `.secret.key` are both lost, previously encrypted
 > settings become unreadable (they're treated as unset, not fatal) — you'll just

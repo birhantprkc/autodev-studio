@@ -45,10 +45,8 @@ class Settings(BaseSettings):
     database_url: str = _default_database_url()
 
     # --- Knowledge base / RAG ---
-    # Retrieval backend for the agents' repo knowledge base:
-    #   "local"    — the built-in, self-contained code-graph KB; the default.
-    #   "deepwiki" — an external DeepWiki Open server (optional, advanced).
-    rag_backend: str = "local"
+    # There is one retrieval backend: the built-in, self-contained code-graph
+    # knowledge base in services/knowledge. Nothing external to run or pay for.
 
     # --- Code graph (services/knowledge/graph.py) ---
     # The deterministic localization + structural layer: a persistent knowledge
@@ -158,12 +156,6 @@ class Settings(BaseSettings):
     # compounds without cluttering (one LLM call per affected module, at prune
     # time only).
     kb_consolidate: bool = True
-
-    # --- Optional external DeepWiki Open server (only used when rag_backend="deepwiki") ---
-    deepwiki_url: str = "http://localhost:8001"
-    deepwiki_provider: str = "openai"
-    deepwiki_model: str = "gpt-4o"
-    repo_type: str = "github"                   # github | gitlab | bitbucket
 
     # --- Precision retrieval: right-sized, use-case-scoped, ranked context ---
     # Feed agents a token-budgeted slice with exact source files (instead of a
@@ -351,9 +343,9 @@ class Settings(BaseSettings):
     # through env/.env may use `~`; consumers expand it before filesystem use.
     repos_dir: str = str(Path.home() / ".codejury" / "workspace")
 
-    # Optional fallback source for OPENAI_API_KEY (e.g. a sibling DeepWiki .env).
-    # Empty by default — the primary source is OPENAI_API_KEY in env / .env.
-    deepwiki_env_path: str = ""
+    # Optional fallback .env for OPENAI_API_KEY. Empty by default — the primary
+    # source is OPENAI_API_KEY in env / .env.
+    openai_env_path: str = ""
     # Optional fallback .env for ANTHROPIC_API_KEY. Empty by default — primary
     # source is ANTHROPIC_API_KEY in env / .env.
     agent_env_path: str = ""
@@ -386,7 +378,6 @@ class Settings(BaseSettings):
     jira_project_key: str = ""
 
     # Demo seed (real integration boots empty by default; set true for sample data)
-    seed_on_startup: bool = False
 
     # --- Bootstrap admin ---
     # Password for the `admin` account created on first boot. Leave blank to have
@@ -413,10 +404,10 @@ for _stage_field in ("knowledge_model", "pm_model", "planner_model", "dev_model"
     if not getattr(settings, _stage_field):
         setattr(settings, _stage_field, settings.qa_model)
 
-# Reuse DeepWiki's configured OpenAI key for the QA agent if ours is unset.
+# OpenAI key: env first, then an optional fallback .env.
 if not settings.openai_api_key:
     settings.openai_api_key = os.environ.get("OPENAI_API_KEY", "") or _load_key_from_env_file(
-        "OPENAI_API_KEY", settings.deepwiki_env_path
+        "OPENAI_API_KEY", settings.openai_env_path
     )
 
 # Gemini key: env first, then AGENT/.env (GEMINI_API_KEY or GOOGLE_API_KEY).

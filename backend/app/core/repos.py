@@ -13,7 +13,7 @@ from sqlmodel import Session, select
 
 from ..config import settings
 from ..models import AgentRun, ChatMessage, KBStatus, LogEntry, Repo, ScopeSession, Task
-from ..services import background, deepwiki, git_ops
+from ..services import background, git_ops, rag
 from .errors import conflict, not_found
 
 logger = logging.getLogger(__name__)
@@ -96,13 +96,13 @@ def ingest(db: Session, git_url: str, default_branch: str = "main") -> Repo:
     db.commit()
     db.refresh(repo)
 
-    background.submit(deepwiki.ingest, repo.id)
+    background.submit(rag.ingest, repo.id)
     return repo
 
 
 def reindex(db: Session, repo_id: int) -> Repo:
     repo = require(db, repo_id)
-    background.submit(deepwiki.ingest, repo.id)
+    background.submit(rag.ingest, repo.id)
     return repo
 
 

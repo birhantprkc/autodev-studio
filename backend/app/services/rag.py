@@ -1,19 +1,15 @@
 """Repo ingestion + knowledge-base chat — the RAG entry point for the agents.
 
-By default this delegates to the built-in local RAG (services/local_rag.py), so
-the platform is fully self-contained. Set rag_backend="deepwiki" to instead use
-an external DeepWiki Open server (a hosted RAG service that clones + embeds the
-repo on first query). Either way, we ALSO clone our own working copy for the
-agents to edit.
+Everything here is local and self-contained: the code graph and symbol map built
+by services/knowledge, queried in-process. There is no external knowledge
+service to configure, run or pay for.
 """
 
 import logging
 import re
 
-import httpx
 from sqlmodel import Session
 
-from ..config import settings
 from ..database import engine
 from ..models import KBStatus, Repo, utcnow
 from . import git_ops
@@ -23,32 +19,12 @@ logger = logging.getLogger(__name__)
 _SOURCE_RE = re.compile(r"`([A-Za-z0-9_][\w./\-]*\.[A-Za-z0-9]+)`")
 
 
-def ask(repo_url: str, messages: list[dict], *, provider: str | None = None,
-        model: str | None = None, type_: str | None = None, timeout: int = 600) -> str:
+def ask(repo_url: str, messages: list[dict], *, timeout: int = 600) -> str:
     """Ask the repo's knowledge base a question. `messages` is [{role, content}]
     with roles 'user'/'assistant'. Returns the full answer text."""
-    if settings.rag_backend != "deepwiki":
-        from .knowledge import retriever as knowledge_retriever
+    from .knowledge import retriever as knowledge_retriever
 
-        return knowledge_retriever.answer(repo_url, messages, timeout=timeout)
-
-    # External DeepWiki Open server (optional advanced backend).
-    payload = {
-        "repo_url": repo_url,
-        "type": type_ or settings.repo_type,
-        "messages": messages,
-        "provider": provider or settings.deepwiki_provider,
-        "model": model or settings.deepwiki_model,
-        "language": "en",
-    }
-    text = ""
-    with httpx.Client(timeout=timeout) as client, \
-            client.stream("POST", f"{settings.deepwiki_url}/chat/completions/stream", json=payload) as r:
-        r.raise_for_status()
-        for chunk in r.iter_text():
-            if chunk:
-                text += chunk
-    return text.strip()
+    return knowledge_retriever.answer(repo_url, messages, timeout=timeout)
 
 
 def extract_sources(text: str, limit: int = 6) -> list[str]:
@@ -61,7 +37,7 @@ def extract_sources(text: str, limit: int = 6) -> list[str]:
 
 
 def ingest(repo_id: int) -> None:
-    """Clone a working copy + warm the DeepWiki index. Runs on a background thread."""
+    """Clone a working copy + build the code graph. Runs on a background thread."""
     with Session(engine) as db:
         repo = db.get(Repo, repo_id)
         if repo is None:
@@ -74,14 +50,12 @@ def ingest(repo_id: int) -> None:
         db.add(repo)
         db.commit()
 
-    local = settings.rag_backend != "deepwiki"
     try:
         path = git_ops.ensure_clone(repo_url)
         with Session(engine) as db:
             repo = db.get(Repo, repo_id)
             repo.kb_progress = 35
-            repo.kb_step = ("Analyzing structure (AST)…" if local
-                            else "Indexing & embedding via DeepWiki…")
+            repo.kb_step = "Analyzing structure (AST)…"
             db.add(repo)
             db.commit()
 
@@ -90,37 +64,29 @@ def ingest(repo_id: int) -> None:
         kb_tokens_in = kb_tokens_out = 0
         kb_cost = 0.0
         overview = ""
-        if local:
-            # The knowledge build is deterministic and free: the code graph
-            # (AST of every file → definitions, calls, routes; built by the
-            # codebase-memory-mcp binary in seconds) plus the symbol-map
-            # fallback tier. No LLM cost, no embedding service.
-            from .knowledge import pipeline as knowledge_pipeline
+        # The knowledge build is deterministic and free: the code graph (AST of
+        # every file → definitions, calls, routes; built by the
+        # codebase-memory-mcp binary in seconds) plus the symbol-map fallback
+        # tier. No LLM cost, no embedding service.
+        from .knowledge import pipeline as knowledge_pipeline
 
-            def _progress(step: str, pct: int) -> None:
-                with Session(engine) as db2:
-                    r = db2.get(Repo, repo_id)
-                    if r is not None:
-                        r.kb_step, r.kb_progress = step, pct
-                        db2.add(r)
-                        db2.commit()
+        def _progress(step: str, pct: int) -> None:
+            with Session(engine) as db2:
+                r = db2.get(Repo, repo_id)
+                if r is not None:
+                    r.kb_step, r.kb_progress = step, pct
+                    db2.add(r)
+                    db2.commit()
 
-            kr = knowledge_pipeline.generate(repo_url, progress=_progress)
-            if kr.generated:
-                knowledge_count = kr.doc_count
-                knowledge_views = kr.counts
-                if kr.overview:
-                    overview = kr.overview  # prefer the structured overview
-                logger.info("Knowledge: %d graph nodes for %s", kr.doc_count, repo_url)
-            elif kr.error:
-                logger.info("Knowledge build skipped/failed for %s: %s", repo_url, kr.error)
-        else:
-            # First query clones+embeds the repo inside DeepWiki (can take minutes).
-            overview = ask(
-                repo_url,
-                [{"role": "user", "content": "Give a concise 3-sentence overview of this repository's architecture and main components."}],
-                timeout=1800,
-            )
+        kr = knowledge_pipeline.generate(repo_url, progress=_progress)
+        if kr.generated:
+            knowledge_count = kr.doc_count
+            knowledge_views = kr.counts
+            if kr.overview:
+                overview = kr.overview  # prefer the structured overview
+            logger.info("Knowledge: %d graph nodes for %s", kr.doc_count, repo_url)
+        elif kr.error:
+            logger.info("Knowledge build skipped/failed for %s: %s", repo_url, kr.error)
         doc_count = git_ops.count_files(path)
 
         with Session(engine) as db:

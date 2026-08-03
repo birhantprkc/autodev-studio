@@ -32,11 +32,12 @@ dependencies = [
   "rich>=13.7",
   "prompt_toolkit>=3.0.43",
   "textual>=0.79",
-  # --- Web UI + JSON API (`codejury serve`) ---
+  # --- The agents' loopback index endpoint ---
+  # Not a web app: the Dev and jury agents run as separate processes and the
+  # vector store is single-writer, so they query the index over loopback
+  # instead of opening it a second time.
   "fastapi>=0.110",
   "uvicorn[standard]>=0.29",
-  "python-multipart>=0.0.9",
-  "jinja2>=3.1",
   # --- Shared ---
   "sqlmodel>=0.0.16",
   "pydantic>=2.6",

@@ -1,6 +1,6 @@
 """The interactive shell.
 
-The home surface is a conversation, not a dashboard. You describe a change in
+The home surface is a conversation, not a set of screens. You describe a change in
 plain English and the PM agent works it; slash commands drive everything the
 conversation can't express. Full-screen panels exist for the three things that
 genuinely need two dimensions — the jury's review, the settings matrix, and the
