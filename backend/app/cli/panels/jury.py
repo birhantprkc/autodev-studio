@@ -1,4 +1,4 @@
-"""The jury roster: who sits on the panel, in what order, on which model.
+"""The jury roster: who sits, in what order, on which model.
 
 Editing this changes what every future delivery is judged against, and each
 seated judge is a paid model call per review round — so the panel makes both
@@ -6,8 +6,12 @@ costs legible: how many seats are enabled, and whether each one can actually
 run with the providers currently configured. A judge pointed at a provider with
 no key is not a stricter review, it is an abstention waiting to happen.
 
-Ordering matters too, and not only cosmetically: the roster order is the order
-opinions reach the foreperson.
+This shows the roster for the CURRENT jury mode only (Settings → Jury size),
+because those are the seats that will actually be polled; the other mode's seats
+are kept, untouched, until it is selected again. In pair mode the decision rule
+matters more than the ordering — two judges, both must approve — so it is spelled
+out in the subtitle. In panel mode the roster order is the order opinions reach
+the foreperson.
 """
 
 from __future__ import annotations
@@ -43,7 +47,12 @@ def judge_detail(judge: dict, g: theme.Glyphs) -> RenderableType:
     if not judge["enabled"]:
         head += Text("   not seated", style=S("muted"))
     body.append(head)
-    body.append(Text(str(judge.get("persona_name") or "Custom"), style=S("brand")))
+    # The shipped judges are named after their persona, so printing both put the
+    # same words on two consecutive lines. Only say it when it adds something —
+    # a renamed seat, or a custom brief.
+    persona_name = str(judge.get("persona_name") or "Custom")
+    if persona_name.strip().lower() != str(judge["name"]).strip().lower():
+        body.append(Text(persona_name, style=S("brand")))
 
     model = judge.get("effective_model") or "(provider default)"
     provider = judge.get("effective_provider") or "—"
@@ -141,8 +150,12 @@ class JuryPanel(App[int]):
             index = min(keep, len(self.judges) - 1)
             roster.index = index
             self._show(self.judges[index])
-        self.sub_title = (f"{self.data.get('enabled_count', 0)} of {len(self.judges)} seated "
-                          f"— each is a model call per review round")
+        # One short line: it shares the title bar with the app name, and the
+        # terminal truncates rather than wraps.
+        self.sub_title = (
+            f"{self.data.get('mode', 'pair')} · "
+            f"{self.data.get('enabled_count', 0)}/{len(self.judges)} seated · "
+            f"{self.data.get('decision_rule', '')}")
 
     def _row(self, judge: dict) -> RenderableType:
         if judge["enabled"]:
@@ -184,8 +197,16 @@ class JuryPanel(App[int]):
         self._rebuild(index)
 
     def action_toggle(self) -> None:
+        judge = self._selected()
+        seating_off = bool(judge and judge["enabled"])
         self._mutate(lambda judges, db, j:
                      judges.update(db, j["id"], {"enabled": not j["enabled"]}))
+        # In pair mode the two briefs are complements, not alternatives: dropping
+        # one does not make the review cheaper, it makes half of it stop
+        # happening, silently, on every future delivery.
+        if seating_off and self.data.get("mode") == "pair":
+            self.notify(f"{judge['name']}'s half of the review will no longer be covered "
+                        f"by anyone.", severity="warning")
 
     def action_move_up(self) -> None:
         index = self.query_one("#roster", ListView).index or 0
@@ -249,7 +270,7 @@ class JuryPanel(App[int]):
         self.edits += 1
         self._reload()
         self._rebuild()
-        self.notify("Roster reset to the default panel.")
+        self.notify(f"Roster reset to the default {self.data.get('mode', 'pair')} jury.")
 
     def action_toggle_theme(self) -> None:
         self.theme = "textual-light" if self.theme == "textual-dark" else "textual-dark"

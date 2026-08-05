@@ -118,21 +118,42 @@ See [knowledge-base.md](knowledge-base.md) for what these control.
 
 ## Review jury
 
-The panel roster itself (which judges are seated, on which models, with what briefs)
+The roster itself (which judges are seated, on which models, with what briefs)
 lives in the database and is edited from **Settings → Review jury** — it is a list, not
-a setting, so it has no env var. These are the panel-wide knobs:
+a setting, so it has no env var. These are the jury-wide knobs:
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `JURY_ENABLED` | `true` | Review by ensemble. Off = the classic single reviewer (`REVIEW_PROVIDER`/`REVIEW_MODEL`) does it alone. |
-| `JURY_MAX_PARALLEL` | `4` | How many judges are polled at once. Lower it if a free-tier provider rate-limits the panel. |
-| `JURY_MIN_CONFIDENCE` | `0.5` | Findings a judge reports below this confidence are dismissed by the foreperson instead of sent back to Dev. |
-| `JURY_SYNTHESIS_PROVIDER` | *(Review stage)* | Provider for the foreperson — the call that merges opinions and decides. |
+| `JURY_MODE` | `pair` | `pair`: two judges whose briefs split the whole review between them, decided by **unanimity** with no foreperson — both approve or it goes back to Dev with the dissent attached. `panel`: N narrow specialists plus a foreperson that merges their opinions and decides. |
+| `JURY_MAX_PARALLEL` | `4` | How many judges are polled at once. Lower it if a free-tier provider rate-limits the jury. |
+| `JURY_MIN_CONFIDENCE` | `0.5` | Findings a judge reports below this confidence are dismissed instead of sent back to Dev. |
+| `JURY_SYNTHESIS_PROVIDER` | *(Review stage)* | Provider for the foreperson — the call that merges opinions and decides. **Panel mode only**; the pair decides by rule. |
 | `JURY_SYNTHESIS_MODEL` | *(Review stage)* | Model for the foreperson. Worth a strong one: it's cheap (no diff, just opinions) and it makes the call. |
 
-> **Cost.** Every seated judge is one LLM call per review round, so a 4-judge panel plus
-> the foreperson makes the review stage roughly 5× what a single reviewer costs. Each
-> judge is billed to its own run, so the Costs page shows this rather than hiding it.
+**Each mode keeps its own roster.** Switching to `panel` and back never discards the
+seats you configured for the pair, and only the current mode's judges are ever polled.
+
+> **Cost.** Every seated judge is one LLM call per review round: the default pair is 2
+> calls and no foreperson, while a 4-judge panel plus the foreperson makes the review
+> stage roughly 5× a single reviewer. Each judge is billed to its own run, so the Costs
+> page shows this rather than hiding it. Note that review is the *cheapest* stage in the
+> pipeline — a juror reads one case file once and answers in a few hundred tokens, where
+> Dev reads whole source files across up to four rounds and generates the change.
+
+**The jury's diff budget is derived, not fixed.** It comes from what the seated jurors'
+providers accept in one request (`llm.request_budget`), floored at `DIFF_CHARS` (11K,
+sized for Groq's free-tier `MAX_REQUEST_CHARS` of 22K). Seats on Gemini, Anthropic or an
+agentic CLI get the whole diff. Because the case file is shared byte-for-byte across
+seats, the budget is the **tightest** seat's — pairing one free-tier juror with one roomy
+one clips both. Any cut lands on a line boundary and labels itself, so a juror never
+reads the tail as missing code.
+
+**Keep the reviewers off the writer's model.** Set `REVIEW_PROVIDER` (and ideally
+`QA_PROVIDER`) to a different vendor than `DEV_PROVIDER`: a model re-reading its own
+output finds its own reasoning persuasive, which is exactly the failure a review exists
+to catch. The two pair jurors are spread across distinct configured providers
+automatically.
 
 ## Pipeline behaviour
 

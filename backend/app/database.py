@@ -40,6 +40,12 @@ def _migrate() -> None:
         "agentrun": [
             ("usage_unknown", "BOOLEAN DEFAULT 0"),
         ],
+        # Rosters predating the pair/panel split were panels: every existing seat
+        # is a specialist that belongs to the N-judge + foreperson mode, and the
+        # pair roster is seeded empty on first use of the new default.
+        "judge": [
+            ("mode", "VARCHAR DEFAULT 'panel'"),
+        ],
         "user": [
             ("github_login", "VARCHAR"),
             ("github_name", "VARCHAR"),

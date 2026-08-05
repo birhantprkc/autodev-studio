@@ -152,22 +152,29 @@ FIELDS: dict[str, Spec] = {
                                   "Hard dollar ceiling per Claude CLI run. 0 disables the cap.",
                                   type="float", min=0, max=50, section="Advanced"),
 
-    # --- Review jury (the panel roster itself is edited on the Jury tab) ---
+    # --- Review jury (the roster itself is edited on the Jury tab) ---
     "jury_enabled": Spec("jury", "Multi-judge review",
-                         "Review the change with an ensemble of specialized judges instead of "
-                         "one reviewer, then synthesize their opinions into one verdict. Off = "
+                         "Review the change with an ensemble of judges instead of one "
+                         "reviewer, then turn their opinions into one verdict. Off = "
                          "the single Review stage model above does it alone.", type="bool"),
+    "jury_mode": Spec("jury", "Jury size",
+                      "'pair': two judges splitting the whole review between them, decided "
+                      "by unanimity — both approve or it goes back to Dev. Two model calls "
+                      "per round. 'panel': N specialists plus a foreperson — deeper, several "
+                      "times the bill. Each mode keeps its own roster (/jury).",
+                      type="enum", options=["pair", "panel"], show_if="jury_enabled=true"),
     "jury_synthesis_provider": Spec("jury", "Foreperson provider",
                                     "Merges the judges' opinions, resolves their disagreements "
                                     "and decides. Worth a strong model — it's a cheap call (no "
-                                    "diff, just opinions) and it makes the call.",
+                                    "diff, just opinions) and it makes the call. Panel mode "
+                                    "only; the pair decides by rule and never calls it.",
                                     type="provider", options=providers.stage_provider_ids("review"),
                                     model_field="jury_synthesis_model",
-                                    show_if="jury_enabled=true"),
+                                    show_if="jury_mode=panel"),
     "jury_synthesis_model": Spec("jury", "Foreperson model",
-                                 "Model for the synthesis stage.", type="model",
+                                 "Model for the synthesis stage (panel mode only).", type="model",
                                  provider_field="jury_synthesis_provider",
-                                 show_if="jury_enabled=true"),
+                                 show_if="jury_mode=panel"),
     "jury_min_confidence": Spec("jury", "Confidence floor",
                                 "Findings a judge reports below this confidence are dismissed "
                                 "instead of sent back to Dev. Raise it if the panel is blocking "
@@ -364,8 +371,8 @@ GROUPS: list[tuple[str, str, str]] = [
     ("models", "Agent models", "Assign a provider + model to each pipeline stage. Use the preset "
                                "to point every stage at one provider in a click."),
     ("jury", "Review jury", "Code quality should come from several independent perspectives, not "
-                            "one model's judgement. Seat the judges, give each its own model, and "
-                            "tune how the foreperson weighs what they find."),
+                            "one model's judgement. These are the jury-wide settings — to seat "
+                            "judges and give each its own model, open the roster with /jury."),
     ("pipeline", "Pipeline limits", "Loop bounds and request budgets."),
     ("knowledge", "Knowledge base", "How repositories are indexed and kept fresh."),
     ("delivery", "Delivery & safety", "What the pipeline is allowed to do to real repositories."),

@@ -13,9 +13,23 @@ from __future__ import annotations
 from ...config import settings
 from ..prompts import clip
 
-# Budgets. The diff is the expensive part and every juror pays for it, so it is
-# capped harder here than in the single-reviewer prompt.
+# Budgets for the fixed blocks. These are small, bounded, and the same on every
+# provider — it is the diff that has to flex.
+#
+# DIFF_CHARS is the FLOOR, not the cap: the smallest diff budget the jury will
+# ever use, sized so a case file still fits a free-tier Groq request (8000 TPM,
+# max_request_chars 22000). Every seat that can take more gets more, via
+# ``diff_budget`` below. A reviewer judging a diff it can only half see is the
+# exact failure this subsystem exists to prevent — it produces confident findings
+# about code that was never on screen, and confident approvals of code that was
+# never read — so the budget is spent on the diff before anything else.
 DIFF_CHARS = 11000
+# Room reserved inside a request for everything that is not the diff: the fixed
+# blocks below, the per-juror charge and evidence, the output contract, and the
+# model's own answer. Measured generously — overshooting the transport's cap
+# hands the request to a blind middle-trim, which is strictly worse than a
+# labelled cut on a line boundary.
+NON_DIFF_RESERVE = 24000
 CONTEXT_CHARS = 4000
 DEV_SUMMARY_CHARS = 1500
 # The original request is the cheapest and highest-value block in the prompt —
@@ -33,6 +47,29 @@ JUDGE_SYSTEM = (
     "theirs, and do not pad your review with their concerns. Report what you can "
     "point at in the code. Respond with a single JSON object and nothing else."
 )
+
+# PAIR mode. Two differences from the panel system prompt, and both change how a
+# juror should behave: there is no foreperson to catch an overreach or rescue an
+# under-reach, and the other juror's brief is the exact complement of this one —
+# so "someone else will probably mention it" is false in both directions.
+PAIR_SYSTEM = (
+    "You are one of exactly TWO jurors reviewing this change. You review "
+    "independently and in parallel, and between your two briefs you cover the "
+    "whole of the review — there is no third juror and NO FOREPERSON. Your vote "
+    "is final and unanimity is required: if you request changes, the change goes "
+    "back to the developer; if you approve and so does the other juror, it "
+    "ships. Two consequences. First, anything inside your assigned half that you "
+    "do not report is NOT reported — nobody else is looking there. Second, "
+    "nothing you report is filtered by an arbiter, so a finding you are not "
+    "confident in costs a real paid revision round; say so honestly in "
+    "\"confidence\" instead of hedging by inflating it. Review only your assigned "
+    "half; the other juror is genuinely covering theirs. Respond with a single "
+    "JSON object and nothing else."
+)
+
+
+def judge_system(mode: str = "panel") -> str:
+    return PAIR_SYSTEM if mode == "pair" else JUDGE_SYSTEM
 
 
 _OUTPUT_CONTRACT = """\
@@ -61,14 +98,36 @@ Rules for the fields:
   Use ABSTAIN if this change contains nothing in your area of responsibility.
 - "confidence" is your honest probability that the finding is real and not a
   misreading of code you can only partly see. Below 0.5 means you are guessing;
-  guesses are filtered out by the foreperson, so mark them honestly rather than
-  inflating them.
+  the jury dismisses findings under its confidence floor, so mark them honestly
+  rather than inflating them to get them heard.
 - "severity" is about impact if you are right, independent of confidence.
 - Every finding needs "evidence" you can quote from the diff or the provided
   file content. A finding you cannot ground is not a finding — drop it.
 - An empty "findings" list with "verdict": "APPROVE" is a perfectly good review.
   Do NOT invent issues to look thorough; every false finding costs a real,
   paid revision round and trains the pipeline to ignore you."""
+
+
+def diff_budget(provider_ids) -> int:
+    """How much of the diff every seated juror can be shown.
+
+    The case file is built ONCE and sent to the whole jury byte-identically, so
+    there is one budget and it belongs to the most constrained seat: showing
+    juror A more than juror B can receive would either break the shared prefix or
+    hand B's request to a blind transport-level trim.
+
+    Sized from what the transports actually accept (``llm.request_budget``)
+    rather than from a constant. On the shipped free-tier default that lands back
+    on ``DIFF_CHARS``; with both seats on Gemini, Anthropic or an agentic CLI, a
+    40K diff arrives whole — which is the only way a juror can say anything
+    trustworthy about the parts of it that used to fall off the end.
+    """
+    from .. import llm
+
+    budgets = [llm.request_budget(p) for p in provider_ids if p]
+    if not budgets:
+        return DIFF_CHARS
+    return max(DIFF_CHARS, min(budgets) - NON_DIFF_RESERVE)
 
 
 def judge_user(charge: str, task_key: str, title: str, criteria: list[str], diff: str,
@@ -93,7 +152,7 @@ def judge_user(charge: str, task_key: str, title: str, criteria: list[str], diff
 def judge_case(task_key: str, title: str, criteria: list[str], diff: str,
                context: str = "", impact: str = "", dev_summary: str = "",
                test_output: str = "", request: str = "", description: str = "",
-               localization: str = "", alerts: str = "") -> str:
+               localization: str = "", alerts: str = "", diff_chars: int = 0) -> str:
     """The case file every juror sees — byte-identical across the panel.
 
     Split out from the per-juror charge so it can be built ONCE and handed to
@@ -133,7 +192,12 @@ def judge_case(task_key: str, title: str, criteria: list[str], diff: str,
         blocks += ["", "Test run output:", "```", clip(test_output.strip(), 2500, 'test output'), "```"]
     if alerts.strip():
         blocks += ["", alerts.strip()]
-    blocks += ["", "The implementation under review:", "```diff", clip(diff, DIFF_CHARS), "```"]
+    # The diff goes LAST, and gets whatever budget the seats can take. Last so
+    # everything above it is a stable prefix across revision rounds (only the
+    # diff and the test output move), and biggest because it is the only block
+    # the verdict is actually about.
+    blocks += ["", "The implementation under review:", "```diff",
+               clip(diff, diff_chars or DIFF_CHARS), "```"]
     return "\n".join(blocks)
 
 

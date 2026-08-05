@@ -12,9 +12,32 @@ All transports return the same dict: {text, tokens_in, tokens_out, cost, model, 
 
 from __future__ import annotations
 
+from ..config import settings
 from . import agent_backends, anthropic_api, openai_agent, providers
 
 _USAGE_KEYS = ("tokens_in", "tokens_out", "cost")
+
+# Request budgets, in characters, that the transports actually enforce. A caller
+# that wants to fill a prompt to the edge has to know where the edge is —
+# otherwise it either overshoots (and gets middle-trimmed at the transport, which
+# cuts blindly) or it undershoots by guessing low, which is how a reviewer ended
+# up judging 11K of a 40K diff on a provider that would have taken all of it.
+_GEMINI_FLOOR = 120000       # Gemini's per-minute budget is huge; don't trim to Groq's
+_ROOMY = 400000              # native Anthropic + the agentic CLIs: no trim in the path
+
+
+def request_budget(provider: str) -> int:
+    """Characters this provider's transport will accept in one request.
+
+    The single source of truth for the caps enforced in ``openai_agent.chat``;
+    prompt builders size themselves against this rather than hard-coding a number
+    that only made sense for one free tier.
+    """
+    if providers.kind(provider) in ("anthropic", "claude-cli", "agent"):
+        return _ROOMY
+    if provider == "gemini":
+        return max(int(settings.max_request_chars), _GEMINI_FLOOR)
+    return int(settings.max_request_chars)
 
 
 def carry_usage(result: dict, *previous: dict | None) -> dict:

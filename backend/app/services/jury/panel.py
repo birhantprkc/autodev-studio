@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
@@ -30,6 +31,15 @@ logger = logging.getLogger(__name__)
 
 _SEVERITIES = ("critical", "high", "medium", "low")
 _VERDICTS = ("APPROVE", "REQUEST_CHANGES", "ABSTAIN")
+
+# A failed juror is retried once on a jury of this size or smaller — i.e. the
+# pair, where a lost seat costs the delivery rather than a perspective. On a full
+# panel the same retry would multiply a provider-wide rate limit into a stampede
+# for a gap the foreperson is already told about.
+_RETRY_UNDER_SEATS = 2
+# Long enough for a per-minute free-tier window to have moved on; the single
+# reviewer's own retry waits 20s for the same reason.
+_RETRY_DELAY = 15
 
 
 @dataclass
@@ -282,13 +292,18 @@ def poll_judge(judge: Judge, case: dict, workdir: str = "", repo: str = "",
     # charge and its persona-specific evidence follow it — the architecture
     # juror sees the neighbours it must compare against, the security juror sees
     # whether the change is reachable at all, and so on.
-    shared = case_file if case_file is not None else prompts.judge_case(**case)
+    shared = (case_file if case_file is not None
+              else prompts.judge_case(**case, diff_chars=prompts.diff_budget([provider])))
     user = prompts.judge_charge(
         charge, evidence.for_persona(judge.persona, workdir, case.get("diff", "")))
 
+    # A pair juror is told there is no foreperson behind it and no third juror
+    # beside it — which is what makes its own calibration the panel's calibration.
+    system = prompts.judge_system(judge.mode or roster.current_mode())
+
     for attempt in range(2):
         try:
-            res = _call(prompts.JUDGE_SYSTEM, user, provider, model, workdir=workdir,
+            res = _call(system, user, provider, model, workdir=workdir,
                         cache_prefix=shared)
         except Exception as exc:  # noqa: BLE001 — a juror's crash is an abstention
             op.error = f"{type(exc).__name__}: {exc}"[:300]
@@ -340,6 +355,13 @@ def empanel(judge_rows: list[Judge], case: dict, workdir: str = "",
     Reviews are read-only, so several agentic CLIs sharing the working copy is
     safe — none of them is permitted to edit. ``jury_max_parallel`` caps the
     fan-out anyway, since free-tier providers rate-limit on concurrency.
+
+    A juror that failed with an ERROR (rather than genuinely abstaining) is
+    retried once when the jury is small enough for that failure to be fatal.
+    Under the pair's unanimity rule a lost juror is not a smaller panel, it is an
+    INCONCLUSIVE delivery — and the commonest cause is a free-tier rate limit
+    that has cleared by the time we ask again. This costs nothing on the normal
+    path, because nothing failed on the normal path.
     """
     if not judge_rows:
         return []
@@ -348,13 +370,41 @@ def empanel(judge_rows: list[Judge], case: dict, workdir: str = "",
         on_event("info", f"Empanelling {len(judge_rows)} judge(s), {workers} at a time: "
                          + ", ".join(roster.label(j) for j in judge_rows))
     repo = _repo_of(workdir)
-    # Built once for the whole panel: it is byte-identical per juror, and being
-    # identical is what lets every provider that discounts a repeated prompt
-    # prefix charge the 2nd..Nth juror a fraction of the 1st.
-    case_file = prompts.judge_case(**case)
+    # Built once for the whole jury: byte-identical per juror, which is what lets
+    # a provider that discounts a repeated prompt prefix charge for it once —
+    # across revision rounds always, and across jurors whenever two of them share
+    # an endpoint.
+    #
+    # Its diff is sized to the most constrained SEATED juror rather than to a
+    # constant, so a jury on roomy providers reads the whole change instead of the
+    # first 11K of it.
+    budget = prompts.diff_budget([roster.resolve(j)[0] for j in judge_rows])
+    case_file = prompts.judge_case(**case, diff_chars=budget)
+    if on_event and len(case.get("diff") or "") > budget:
+        on_event("warn", f"Diff is {len(case['diff']):,} chars; the tightest seated juror "
+                         f"can take {budget:,}. The jurors are told the cut is a display "
+                         f"cut and can read the files directly — but a roomier provider "
+                         f"on every seat would show them all of it.")
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="juror") as pool:
         opinions = list(pool.map(
             lambda j: poll_judge(j, case, workdir, repo, case_file), judge_rows))
+
+    if len(judge_rows) <= _RETRY_UNDER_SEATS:
+        for i, (judge, op) in enumerate(zip(judge_rows, opinions, strict=True)):
+            if not op.error:
+                continue
+            if on_event:
+                on_event("warn", f"Juror {op.name} failed ({op.error[:80]}) — retrying once; "
+                                 "without it the whole review is INCONCLUSIVE")
+            time.sleep(_RETRY_DELAY)
+            retried = poll_judge(judge, case, workdir, repo, case_file)
+            # Carry the first attempt's usage: it was billed whether or not it
+            # produced an opinion.
+            retried.tokens_in += op.tokens_in
+            retried.tokens_out += op.tokens_out
+            retried.cost += op.cost
+            opinions[i] = retried
+
     if on_event:
         for op in opinions:
             if op.error:

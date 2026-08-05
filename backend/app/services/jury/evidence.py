@@ -116,13 +116,37 @@ def _performance(repo: str, files: list[str]) -> str:
             "not hot, whatever it looks like:\n  " + ", ".join(str(h) for h in hot if h))
 
 
+def _joined(*builders):
+    """Evidence for a juror whose brief spans several perspectives.
+
+    The pair's two briefs are each a union of the narrow ones, so their evidence
+    has to be too — the SYSTEMS juror is asked to cite the neighbour it means AND
+    to say whether untrusted input reaches the change, and it can do neither
+    without both blocks. Empty sections drop out."""
+    def build(repo: str, files: list[str]) -> str:
+        blocks = [b(repo, files) for b in builders]
+        return "\n\n".join(b for b in blocks if b and b.strip())
+    return build
+
+
 _BUILDERS = {
+    # Panel mode: one narrow perspective each.
     "architecture": _architecture,
     "security": _security,
     "reliability": _reliability,
     "tests": _tests,
     "performance": _performance,
+    # Pair mode: the same facts, split down the pair's seam instead.
+    "implementation": _joined(_reliability, _tests),
+    "systems": _joined(_security, _architecture, _performance),
 }
+
+
+# Per-juror budget for this block. The pair's jurors carry several perspectives
+# each, so the single-perspective cap would silently cut the last one off —
+# which is how a juror ends up asked to cite a neighbour it was never shown.
+_BUDGET = {"implementation": 4000, "systems": 4500}
+_DEFAULT_BUDGET = 2500
 
 
 def for_persona(persona_id: str, workdir: str, diff: str) -> str:
@@ -136,6 +160,6 @@ def for_persona(persona_id: str, workdir: str, diff: str) -> str:
         files = changed_files(diff)
         if not files:
             return ""
-        return build(Path(workdir).name, files)[:2500]
+        return build(Path(workdir).name, files)[:_BUDGET.get(persona_id, _DEFAULT_BUDGET)]
     except Exception:  # noqa: BLE001 — evidence is a bonus, never a failure mode
         return ""

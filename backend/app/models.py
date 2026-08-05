@@ -269,13 +269,19 @@ class Judge(SQLModel, table=True):
     in which case ``focus`` carries the operator's own brief). ``provider`` /
     ``model`` are per-judge overrides — empty means "inherit the Review stage",
     which is what a fresh install falls back to before any keys are set.
+
+    ``mode`` is which roster this seat belongs to: "pair" (the two-juror
+    unanimous default) or "panel" (N specialists + a foreperson). Only the rows
+    matching ``settings.jury_mode`` are polled, so an operator who tries the
+    other mode and comes back finds their seats exactly as they left them.
     """
 
     id: int | None = Field(default=None, primary_key=True)
     name: str
     persona: str = "custom"
     enabled: bool = True
-    position: int = 0                 # panel order, ascending
+    mode: str = "pair"                # which roster: "pair" | "panel"
+    position: int = 0                 # roster order, ascending
     provider: str = ""                # "" = inherit review_provider
     model: str = ""                   # "" = inherit review_model
     focus: str | None = Field(default=None, sa_column=Column(Text))

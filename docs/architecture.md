@@ -18,11 +18,11 @@ graph TB
         Core["core/ — the use cases the terminal drives"]
         Tools["tools endpoint (loopback) — the agents' index shim"]
         Orch["orchestrator — Dev → QA → Jury → PR + revise loop"]
-        Jury["jury/ — N specialized judges in parallel + foreperson synthesis"]
+        Jury["jury/ — 2 judges in parallel, unanimous (or N + foreperson)"]
         BG["background — in-process thread pool"]
         KB["knowledge/ + local_rag — analyze · index · retrieve"]
         Agents["pm_agent · claude_agent · openai_agent"]
-        Roster["judges — the panel roster (add/drop/re-model)"]
+        Roster["judges — the roster, per mode (add/drop/re-model)"]
         Git["git_ops — clone / branch / diff / PR"]
         DB[("SQLite (SQLModel)")]
     end
@@ -55,8 +55,8 @@ ingest repo → build knowledge base (code graph + semantic index)
     blast radius, tests to extend
   → Dev agent implements the plan on an agent/<key> branch of a cloned working copy
   → QA agent runs tests + reviews                    ┐
-  → Jury: N specialized judges review independently   ├─ revise loop ×N on failure
-  → Foreperson merges their opinions into one verdict │
+  → Jury: 2 judges review independently, blind        ├─ revise loop ×N on failure
+  → Both approve, or back to Dev (panel: N + foreperson) │
   → PR stage pushes + opens a real PR        ┘
   → human merges
 ```
@@ -154,8 +154,8 @@ lets a run survive a client disconnect.
 | **Planner** | Decide how the change is made; verify every pin against the graph | `planner` |
 | **Dev** | Implement the plan in a cloned working copy | `prompts.dev` / `prompts.revise` |
 | **QA** | Run tests and review the diff skeptically | `prompts.QA_SYSTEM` / `qa_user` |
-| **Jury** | A panel of specialized judges reviews the diff independently, in parallel, each on its own model | `jury/personas.py` + `jury/prompts.py` |
-| **Foreperson** | Merge the judges' opinions, resolve conflicts, drop guesses, decide | `jury/synthesis.py` |
+| **Jury** | Judges review the diff independently, in parallel, each on its own model — two complementary halves by default, or N specialists | `jury/personas.py` + `jury/prompts.py` |
+| **Decision** | Unanimity between the pair (a rule, no model call), or a foreperson that merges opinions, resolves conflicts, drops guesses and decides | `jury/synthesis.py` |
 | **Review** (jury off) | Single-reviewer fallback: review the diff against the acceptance criteria | `prompts.review` / `REVIEW_SYSTEM` |
 | **PR** | Push the branch and open the PR (the `gh` CLI, not an LLM) | `prompts.pr_body` |
 

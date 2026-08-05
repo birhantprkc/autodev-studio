@@ -257,13 +257,27 @@ class Settings(BaseSettings):
     dev_provider: str = ""
 
     # --- Review jury (services/jury) ---
-    # The Review stage runs as an ensemble: several specialized judges review the
-    # same change independently from different engineering perspectives, and a
-    # foreperson merges their opinions into one verdict. The roster itself lives
-    # in the Judge table (runtime-editable, see services/judges.py) — these are
-    # the panel-wide knobs.
+    # The Review stage runs as an ensemble: specialized judges review the same
+    # change independently from different engineering perspectives. The roster
+    # itself lives in the Judge table (runtime-editable, see services/judges.py)
+    # — these are the jury-wide knobs.
     # Off = the classic single-reviewer path (review_provider + review_model).
     jury_enabled: bool = True
+    # How the jury reaches a verdict:
+    #   "pair"  — the default. Two jurors whose briefs split the whole of code
+    #             review between them (implementation / systems), decided by
+    #             UNANIMITY: both approve or the change goes back to Dev with the
+    #             dissent attached. No foreperson — at two jurors there is
+    #             nothing to arbitrate, and paying a third model to reconcile two
+    #             opinions is a call that can only lose information. Two model
+    #             calls per review round.
+    #   "panel" — N narrow specialists (correctness, reliability, security,
+    #             architecture, performance, tests) plus a foreperson that merges
+    #             duplicates, resolves conflicts and decides. Deeper coverage,
+    #             several times the bill, and one more model that can be wrong.
+    # Each mode keeps its OWN roster, so switching back and forth never discards
+    # the seats the operator configured for the other one.
+    jury_mode: str = "pair"
     # How many judges are polled at once. Each judge is one LLM call, so the
     # panel multiplies the review stage's cost by its size; the cap also keeps
     # free-tier providers from rate-limiting the whole panel at once.
@@ -271,7 +285,8 @@ class Settings(BaseSettings):
     # Findings a judge reports below this confidence are dismissed by the
     # foreperson rather than sent back to Dev. 0.5 = "the judge was guessing".
     jury_min_confidence: float = 0.5
-    # The foreperson (synthesis) stage. Empty = reuse the Review stage's
+    # The foreperson (synthesis) stage — PANEL mode only; the pair decides by
+    # unanimity and never calls it. Empty = reuse the Review stage's
     # provider/model. This is the one call that should be a strong model: it is
     # cheap (no diff, just opinions) and it decides.
     jury_synthesis_provider: str = ""

@@ -592,12 +592,14 @@ def _jury_review(task_id: int, path: str, key: str, title: str, criteria: list, 
                  on_event, impact: str = "", context: str = "", dev_summary: str = "",
                  test_output: str = "", request: str = "", description: str = "",
                  localization: str = "") -> tuple[dict, str, dict]:
-    """Review by the jury: N specialized judges in parallel, then a foreperson.
+    """Review by the jury: specialized judges in parallel, then a decision —
+    unanimity between the pair (the default), or a foreperson over a full panel.
 
     Each juror is billed to its OWN AgentRun so the Costs page shows what the
-    panel actually costs per judge (a jury silently multiplies the review stage's
+    jury actually costs per judge (a jury silently multiplies the review stage's
     bill; hiding that in one row would be dishonest). The run this is called
-    from carries the foreperson's usage and the final verdict.
+    from carries the foreperson's usage and the final verdict — in pair mode
+    that usage is zero, because the verdict is a rule rather than a model.
 
     Returns (result, label, decision)."""
     def _bill(op) -> None:
@@ -619,10 +621,15 @@ def _jury_review(task_id: int, path: str, key: str, title: str, criteria: list, 
                       on_event=on_event, on_opinion=_bill)
     decision = res["decision"]
     n = len(res["opinions"])
-    label = f"jury ({n} judge{'s' if n != 1 else ''}) → " + (
-        decision.get("foreperson") or providers.label(
-            settings.jury_synthesis_provider or settings.review_provider,
-            settings.jury_synthesis_model or settings.review_model))
+    seats = f"{n} judge{'s' if n != 1 else ''}"
+    if decision.get("synthesis") == "consensus":
+        # No third model to name — say what actually decided it instead.
+        label = f"jury ({seats}, unanimous)"
+    else:
+        label = f"jury ({seats}) → " + (
+            decision.get("foreperson") or providers.label(
+                settings.jury_synthesis_provider or settings.review_provider,
+                settings.jury_synthesis_model or settings.review_model))
     return res, label, decision
 
 
@@ -1137,8 +1144,9 @@ def _run_scope_locked_impl(session_id: int) -> None:
         agent_runner.finish_run(rid, rep, t0, tokens_in=qa.get("tokens_in", 0), tokens_out=qa.get("tokens_out", 0),
                                 cost=qa.get("cost", 0.0), error=qa.get("error"))
 
-        # Review over the whole scope diff — the jury (several specialized judges
-        # + a foreperson) unless the operator turned the ensemble off.
+        # Review over the whole scope diff — the jury (two judges deciding by
+        # unanimity, or a full panel + foreperson) unless the operator turned the
+        # ensemble off.
         _update_all(ids, status=TaskStatus.review.value)
         verdict = ""
         rid, t0 = agent_runner.start_run(rep, "review")

@@ -160,7 +160,12 @@ def _chat_once(system: str, user: str, *, provider: str, model: str, timeout: in
                 "error": f"{which} not configured for provider '{provider}' — skipping {model}"}
     # Gemini's per-minute budget is huge, so only trim to Groq's tight cap for
     # non-Gemini providers; Gemini takes the full (already file-capped) request.
-    cap = settings.max_request_chars if provider != "gemini" else max(settings.max_request_chars, 120000)
+    # Declared in llm.request_budget so prompt builders can size themselves to
+    # the same number instead of guessing one — a guess low enough to be safe
+    # everywhere clips the diff on providers that would have taken all of it.
+    from .llm import request_budget
+
+    cap = request_budget(provider)
     msgs = [{"role": "system", "content": system}] + (
         messages if messages is not None else [{"role": "user", "content": user}])
     # Hard fit to the per-minute token budget so we never 413 on Groq's free tier

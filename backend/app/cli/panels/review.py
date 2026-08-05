@@ -1,17 +1,18 @@
 """The review panel: what the jury decided, and why.
 
-The jury's whole argument is that four independent perspectives beat one
-confident one. A UI that collapses them into a single verdict throws away the
-thing you paid four model calls for. So the panel keeps the evidence next to
-the decision:
+The jury's whole argument is that independent perspectives beat one confident
+one. A UI that collapses them into a single verdict throws away the thing you
+paid for. So the panel keeps the evidence next to the decision:
 
-* **Verdict** — the foreperson's synthesis, and what it *dismissed*. Dismissals
-  are shown, not hidden: "three jurors raised this and the foreperson dropped it
-  as low-confidence" is a fact a reviewer may reasonably disagree with.
+* **Verdict** — how the jury got there (unanimity between the pair, or the
+  foreperson's synthesis on a full panel), and what was *dismissed*. Dismissals
+  are shown, not hidden: "two jurors raised this and it was dropped as
+  low-confidence" is a fact a reviewer may reasonably disagree with.
 * **Jurors** — every seat, in roster order, including the ones that abstained.
-  An abstention is a coverage gap; a panel reporting "3/4 approved" while
-  silently omitting the fourth seat is lying about how well the change was
-  reviewed.
+  An abstention is a coverage gap; a jury reporting "1/2 approved" while
+  silently omitting the other seat is lying about how well the change was
+  reviewed — and under the pair's unanimity rule an abstention is never an
+  approval.
 * **Diff**, **Plan**, **QA** — the change, what it was supposed to be, and
   whether the tests agreed.
 
@@ -119,13 +120,22 @@ def verdict_view(payload: dict, g: theme.Glyphs) -> RenderableType:
         body.append(Text(f"{g.fail} Synthesised WITHOUT the foreperson model — merged "
                          "mechanically by title overlap, and deliberately more permissive "
                          "than a full review.", style=S("warn")))
+    consensus = jury.get("synthesis") == "consensus"
+    if consensus:
+        # Which rule produced this verdict is part of reading it: no model
+        # weighed these votes, and one juror withholding approval was enough.
+        body.append(Text(""))
+        body.append(Text("Decided by unanimity — every seated juror had to approve, "
+                         "and no foreperson reweighed them.", style=S("muted")))
 
     if jury.get("rationale"):
         body.extend([Text(""), Markdown(str(jury["rationale"]))])
 
+    dismissed_label = ("Dismissed — below the confidence floor" if consensus
+                       else "Dismissed by the foreperson")
     for label, key, style_name in (("Blocking", "blocking", "err"),
                                    ("Observations", "observations", "warn"),
-                                   ("Dismissed by the foreperson", "dismissed", "muted")):
+                                   (dismissed_label, "dismissed", "muted")):
         entries = jury.get(key) or []
         if not entries:
             continue

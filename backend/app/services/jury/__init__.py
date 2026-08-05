@@ -1,4 +1,4 @@
-"""The review jury: an ensemble of specialized judges instead of one reviewer.
+"""The review jury: an ensemble of judges instead of one reviewer.
 
 A single reviewer model evaluating a single coding model's output has a known
 shape of failure. It is confident, it is fast, and it is blind in exactly the
@@ -7,17 +7,26 @@ places the author was blind — same training distribution, same idea of what
 the feature through. Adding a second pass from the same model does not fix this;
 it produces the same opinion twice.
 
-So the review stage is a panel:
+So the review stage is a jury, in one of two shapes:
+
+* PAIR (the default) — two jurors on different models, with briefs that split
+  the whole of code review between them: implementation on one side, systems on
+  the other. Decided by unanimity, with no foreperson: both approve, or the
+  change goes back to Dev with the dissent attached. Two model calls, an
+  independent second reader, and no third model interposed between the jurors
+  and the verdict.
+* PANEL — N narrow specialists plus a foreperson that merges their opinions.
+  Deeper, several times the bill, and worth it when a change is worth it.
 
     personas.py   — the briefs. Each juror is told what to look for AND what to
                     leave to the others, because uncorrelated reviewers are the
                     entire mechanism.
     panel.py      — polls the jurors in parallel, independently. They never see
                     one another's opinions. Failures abstain loudly.
-    synthesis.py  — the foreperson merges duplicates, resolves conflicts, drops
-                    low-confidence guesses, and decides.
+    synthesis.py  — turns the opinions into one decision: ``consensus`` for the
+                    pair (a rule, not a model), ``deliberate`` for the panel.
     ../judges.py  — the roster: which judges are seated, in what order, on which
-                    models. Operator-editable at runtime.
+                    models. Per mode, and operator-editable at runtime.
 
 ``review()`` below is the whole public surface. It returns the same shape the
 old single-reviewer path returned (text + usage + error) plus the structured
@@ -38,12 +47,17 @@ from . import panel, personas, prompts, synthesis
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["review", "enabled", "panel", "personas", "prompts", "synthesis"]
+__all__ = ["review", "enabled", "mode", "panel", "personas", "prompts", "synthesis"]
 
 
 def enabled() -> bool:
     """Whether the jury runs at all. Off = the classic single-reviewer path."""
     return bool(settings.jury_enabled)
+
+
+def mode() -> str:
+    """``pair`` (two jurors, unanimous, no foreperson) or ``panel`` (N + foreperson)."""
+    return roster.current_mode()
 
 
 def seated() -> int:
@@ -75,7 +89,7 @@ def review(task_key: str, title: str, criteria: list[str], diff: str, *, workdir
             db.expunge(j)
 
     if not judge_rows:
-        # An empty panel is a configuration mistake, not an approval.
+        # An empty jury is a configuration mistake, not an approval.
         decision = {
             "verdict": "INCONCLUSIVE",
             "rationale": "No judges are enabled on the review jury, so this change has NOT "
@@ -100,8 +114,15 @@ def review(task_key: str, title: str, criteria: list[str], diff: str, *, workdir
         for op in opinions:
             on_opinion(op)
 
-    decision = synthesis.deliberate(opinions, task_key, title, criteria,
-                                    on_event=on_event, request=request)
+    # PAIR decides by rule and PANEL by foreperson. The rule is not a degraded
+    # foreperson: with two jurors holding complementary briefs there is no
+    # conflict for a third model to resolve, and every model in the chain is one
+    # more place a correct finding can be talked out of the verdict.
+    if mode() == personas.PAIR:
+        decision = synthesis.consensus(opinions)
+    else:
+        decision = synthesis.deliberate(opinions, task_key, title, criteria,
+                                        on_event=on_event, request=request)
     # Every juror's own opinion IN FULL, carried on the decision and persisted
     # with it. The synthesis is the decision, but it is not the evidence: a
     # reader has to be able to see what each judge actually said, including the
