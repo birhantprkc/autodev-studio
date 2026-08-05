@@ -374,13 +374,21 @@ def plan(plan_obj: dict, g: theme.Glyphs) -> RenderableType:
 
 
 # ── Per-stage model matrix ────────────────────────────────────────────────────
-def stage_models(values: dict, backends: dict[str, dict], g: theme.Glyphs) -> RenderableType:
+def stage_models(values: dict, backends: dict[str, dict], g: theme.Glyphs,
+                 jury_seats: list[tuple[str, str]] | None = None,
+                 jury_mode: str = "") -> RenderableType:
     """Which provider and model owns each stage.
 
     This is the product's core promise, so it gets a first-class view rather
     than living only inside Settings — and it reports whether a stage pointed at
     a coding CLI can actually run here, since "configured" and "installed" are
     different facts.
+
+    When a jury is seated the Review row is NOT who reviews: it is only the
+    fallback for judges that inherit. Showing "Review · claude-cli · haiku" while
+    two jurors on other providers do the actual reviewing is a lie on the one
+    screen whose whole job is to say which model does what — so the seats are
+    listed underneath.
     """
     table = Table(box=None, pad_edge=False, show_header=True, header_style=S("muted"),
                   padding=(0, 2, 0, 0))
@@ -401,9 +409,20 @@ def stage_models(values: dict, backends: dict[str, dict], g: theme.Glyphs) -> Re
             status = Text(f"{g.fail} not installed", style=S("warn"))
         table.add_row(label, provider, Text(str(model), style=S("muted")), status)
 
+    body: list[RenderableType] = [table]
+    if jury_seats:
+        body.append(Text(""))
+        body.append(Text(f"Review runs as a jury ({jury_mode}) — the Review row above is only "
+                         f"the fallback for seats that inherit:", style=S("muted")))
+        for name, label in jury_seats:
+            body.append(Text(f"  {g.bullet} {name}   ", style=S("heading"))
+                        + Text(label, style=S("muted")))
+
     hint = Text(f"/model <stage> <provider> [model]   {g.bullet}   "
-                f"/settings for everything else", style=S("muted"))
-    return frame(Group(table, Text(""), hint), g, title="Agent models",
+                + ("/jury for the judges   " + g.bullet + "   " if jury_seats else "")
+                + "/settings for everything else", style=S("muted"))
+    body += [Text(""), hint]
+    return frame(Group(*body), g, title="Agent models",
                  subtitle=f"{len(STAGES)} stages")
 
 

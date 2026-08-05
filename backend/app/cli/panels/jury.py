@@ -296,15 +296,18 @@ class _ModelPicker(ModalScreen[dict | None]):
             yield Static(Text("Blank provider inherits the Review stage's provider — which "
                               "is usually what you want for most seats, and deliberately "
                               "not what you want for all of them.", style=S("muted")))
-            options = [(p or "(inherit from Review stage)", p) for p in self.provider_options
-                      if p]
+            # The blank entry is Select's own, so it is labelled through `prompt`
+            # rather than added here — an ("", "") option would collide with it
+            # and render an unexplained empty row.
+            options = [(p, p) for p in self.provider_options if p]
             current = self.judge.get("provider") or ""
             # The blank option's real value is Select.NULL, not "" — the
             # empty string is only its on-screen label. Constructing with
             # value="" for a judge that inherits (the common case) would
             # try to validate "" as a legal option and raise.
             yield Select(options, value=current if current else Select.NULL,
-                         allow_blank=True, id="provider")
+                         allow_blank=True, prompt="(inherit from the Review stage)",
+                         id="provider")
             yield Input(value=self.judge.get("model") or "",
                         placeholder="model id (blank = provider default)", id="model")
             with Horizontal():

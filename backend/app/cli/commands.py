@@ -11,6 +11,7 @@ or a provider belongs below this layer.
 
 from __future__ import annotations
 
+import contextlib
 import threading
 import webbrowser
 from collections.abc import Callable
@@ -495,7 +496,20 @@ def cmd_models(shell: Shell, args: str) -> None:
     for pid, p in providers.PROVIDERS.items():
         if p.backend:
             backends[pid] = avail.get(p.backend, {})
-    shell.print(render.stage_models(values, backends, shell.g))
+
+    # Who actually reviews. Never let a jury failure hide the stage table.
+    seats: list[tuple[str, str]] = []
+    jury_mode = ""
+    with contextlib.suppress(Exception):
+        from ..services import judges as roster
+        from ..services import jury as jury_service
+
+        if jury_service.enabled():
+            jury_mode = jury_service.mode()
+            with shell.ctx.db() as db:
+                seats = [(j.name, providers.label(*roster.resolve(j)))
+                         for j in roster.enabled_judges(db)]
+    shell.print(render.stage_models(values, backends, shell.g, seats, jury_mode))
 
 
 @command("/model", "<stage> <provider> [model]", "Point one stage at a provider and model",

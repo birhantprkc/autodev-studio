@@ -123,7 +123,7 @@ Each mode keeps its own roster, so trying the panel and coming back finds your
 pair as you left it. `/jury` edits it:
 
 ```
-  pair mode — 2 of 2 seated, unanimous: all 2 must approve, or it goes back to Dev
+  pair · 2/2 seated · all must approve
 
   ✓  Implementation & Behaviour     codex / gpt-5.1-codex
   ✓  Systems & Fit                  custom / deepseek-v3
