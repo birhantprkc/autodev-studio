@@ -264,6 +264,17 @@ h1 {
   font-size: 1.19rem;
   line-height: 1.62;
 }
+/* The cost objection is the one that stops people reading, so it is answered in
+   the hero rather than four screens down. Quieter than the lede, but above the
+   fold either way. */
+.lede-cost {
+  margin: 1.1rem 0 0;
+  padding-left: 1.1rem;
+  border-left: 2px solid var(--gold-ink);
+  font-size: 1.02rem;
+  color: var(--muted);
+}
+.lede-cost .fig { font-family: var(--mono); font-weight: 600; color: var(--gold-ink); }
 
 .hero-act {
   display: flex;

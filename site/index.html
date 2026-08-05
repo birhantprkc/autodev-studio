@@ -52,11 +52,16 @@
 
     <h1>Your reviewer is a&nbsp;jury,<br>not a judge.</h1>
 
-    <p class="lede">One LLM grading another LLM's code is close to a coin flip with a
-    confident voice. So the review stage here is two models instead of one. They read
-    the same change from different briefs, they never see each other's opinion, and the
-    change ships only if both approve. One&nbsp;&ldquo;no&rdquo; sends it back to the
-    developer with the reason attached.</p>
+    <p class="lede">Coding agents ship slop because the model reviewing the diff is
+    biased in the same direction as the model that wrote it. So the review stage here is
+    two of them, on different providers. They read the same change from different briefs,
+    they never see each other's opinion, and it ships only if both approve. Not more
+    review &mdash; <strong>less correlated</strong> review.</p>
+
+    <p class="lede-cost">And the second judge is nearly free. Review is the cheapest
+    stage in the pipeline: in the delivery recorded below, the whole jury cost
+    <span class="fig">$0.10</span> of a <span class="fig">$3.45</span> run. On free Groq
+    and Gemini models it costs nothing at all.</p>
 
     <div class="hero-act">
       <div class="panel code">
@@ -99,10 +104,32 @@ cd codejury
   <section id="why">
     <h2><i class="num">01</i> Why two reviewers</h2>
 
-    <p>A single judge is fast, confident, and blind in the same places the author was
-    blind. Same training data, same idea of what looks right, same willingness to accept
-    a plausible diff that never wires the feature through. Ask it again and you get the
-    first answer back.</p>
+    <p>A single judge is fast, confident, and &mdash; when it runs the same family as the
+    writer &mdash; blind in the same places the author was blind. Same training data, same
+    idea of what looks right, same willingness to accept a plausible diff that never wires
+    the feature through. Ask it again and you get the first answer back, which is the
+    problem: one opinion sampled twice is still one opinion.</p>
+
+    <h3>The second judge is nearly free</h3>
+
+    <p>Put the cost objection to bed first, because it is the reason people stop reading
+    here. Two judges is two calls, but of the cheapest stage you have. A juror reads one
+    case file once &mdash; the diff, the requirement, and the repo knowledge around it
+    &mdash; and answers in a few hundred tokens of JSON. It never writes code, never
+    iterates, never re-reads the repository. Dev reads whole source files across up to
+    four rounds and generates the entire change. You're doubling the smallest line on the
+    invoice.</p>
+
+    <p>If cost really is the binding constraint, the lever is free-tier providers, not one
+    reviewer. Two judges on free Groq and Gemini models cost nothing.</p>
+
+    <p>The diff isn't rationed to save money, either. The budget is derived from what each
+    seated juror's provider actually accepts in one request, so on Gemini, Anthropic or an
+    agentic CLI the whole diff goes through. Only a genuinely tight endpoint (Groq's free
+    tier caps a request at 22K characters) forces a cut, and then the cut lands on a line
+    boundary and labels itself, so a juror never reads the tail as missing code.</p>
+
+    <h3>The evidence that two beats one</h3>
 
     <p>That isn't just intuition. <a href="https://arxiv.org/abs/2505.20854">SE-Jury</a>
     (Zhou et al., 2025) measured how well automatic judges agree with human experts about
@@ -125,8 +152,9 @@ cd codejury
     </figure>
 
     <p>Program repair is the row that matters, because fixing a bug in existing code is
-    what a coding agent actually does: <strong>76.2 against 43.5</strong>. A single judge
-    is barely better than guessing about whether a patch is really a fix.</p>
+    what a coding agent actually does: <strong>76.2 against 43.5</strong>. On exactly the
+    task the agent spends its day on, the ensemble tracks human judgement close to twice
+    as well as the single judge does.</p>
 
     <aside class="note">
       <p>Two more findings from that paper shaped the design. Swapping the backbone from
@@ -215,22 +243,6 @@ cd codejury
     provider with no usable key is flagged as unable to run, because a juror that silently
     isn't there looks exactly like a juror that found nothing.</p>
 
-    <h3>It costs less than people assume</h3>
-
-    <p>Two judges is two calls, but of the cheapest stage you have. A juror reads one case
-    file once &mdash; the diff, the requirement, and the repo knowledge around it &mdash;
-    and answers in a few hundred tokens of JSON. It never writes code, never iterates,
-    never re-reads the repository. Dev reads whole source files across up to four rounds
-    and generates the entire change. You're doubling the smallest line on the invoice.</p>
-
-    <p>If cost really is the binding constraint, the lever is free-tier providers, not one
-    reviewer. Two judges on free Groq and Gemini models cost nothing.</p>
-
-    <p>The diff isn't rationed, either. The budget is derived from what each seated juror's
-    provider actually accepts in one request, so on Gemini, Anthropic or an agentic CLI the
-    whole diff goes through. Only a genuinely tight endpoint (Groq's free tier caps a
-    request at 22K characters) forces a cut, and then the cut lands on a line boundary and
-    labels itself, so a juror never reads the tail as missing code.</p>
   </section>
 
   <!-- ─────────────────────────────────────────────────────────── 02 -->

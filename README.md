@@ -13,11 +13,26 @@ postdates the recording.</sub>
 
 </div>
 
-One LLM grading another LLM's code is close to a coin flip with a confident
-voice. So the review stage here is two models instead of one. They read the same
+Coding agents ship slop because the thing that reviews the diff is biased in the
+same direction as the thing that wrote it. Same training data, same idea of what
+looks right, same willingness to accept a plausible change that never wires the
+feature through. A single reviewer can be a good one — especially from a
+different family than the writer — but it is one opinion, and when it is wrong it
+is wrong confidently and alone.
+
+So the review stage here is two models, on different providers. They read the same
 change from different briefs, they never see each other's opinion, and the change
 ships only if both approve. One "no" sends it back to the developer with the
-reason attached.
+reason attached. The point is not more review; it is **less correlated** review —
+two judges whose blind spots don't line up, so fewer bad changes get through the
+gate.
+
+**And it costs almost nothing.** Review is the cheapest stage in the pipeline: a
+juror reads one case file and answers in a few hundred tokens of JSON, while Dev
+reads whole source files across up to four rounds and writes the change. Adding
+the second judge doubles the smallest line on the invoice — in a real delivery
+below, the entire jury was $0.10 of a $3.45 run. On free Groq and Gemini models it
+doubles nothing at all.
 
 There is no foreperson. With two jurors there is nothing to arbitrate, and an
 arbiter is just one more model that can talk a correct finding out of the
@@ -26,15 +41,14 @@ and pays a foreperson to reconcile them.
 
 In the recording above, Claude Code writes the change and then **Codex** and
 **DeepSeek V3** judge it, one on each half of the review. That separation is the
-part of this setup that has paid off most for me. A reviewer running the same
-model as the writer shares its blind spots and waves the same mistakes through.
-These two are opinionated in different directions and have caught things I would
-otherwise have merged. That's my own experience, not a benchmark — but it is why
-the default spreads the jury across providers instead of saving the second key.
+part of this setup that has paid off most for me: they are opinionated in
+different directions and have caught things I would otherwise have merged. That's
+my own experience, not a benchmark — but it is why the default spreads the jury
+across providers instead of saving the second key.
 
-The other half of the project is not spending a fortune to do this. CodeJury
-indexes a repo once into a persistent code graph, then looks changes up instead
-of rediscovering them, which is where the review budget comes from.
+The other half of the project is not spending a fortune on the rest of it, either.
+CodeJury indexes a repo once into a persistent code graph, then looks changes up
+instead of rediscovering them, which is where the budget comes from.
 
 <div align="center">
 
@@ -55,10 +69,35 @@ of rediscovering them, which is where the review budget comes from.
 
 ## 1. Why two reviewers
 
-A single judge is fast, confident, and blind in the same places the author was
-blind. Same training data, same idea of what looks right, same willingness to
-accept a plausible diff that never wires the feature through. Ask it again and
-you get the first answer back.
+A single judge is fast, confident, and — when it runs the same family as the
+writer — blind in the same places the author was blind. Same training data, same
+idea of what looks right, same willingness to accept a plausible diff that never
+wires the feature through. Ask it again and you get the first answer back, which
+is the problem: one opinion sampled twice is still one opinion.
+
+### The second judge is nearly free
+
+Put the cost objection to bed first, because it is the reason people stop reading
+here. Two judges is two calls, but of the cheapest stage you have. A juror reads
+one case file once — the diff, the requirement, and the repo knowledge around it —
+and answers in a few hundred tokens of JSON. It never writes code, never iterates,
+never re-reads the repository. Dev reads whole source files across up to four
+rounds and generates the entire change. You're doubling the smallest line on the
+invoice.
+
+In the delivery this README's recording is taken from, the whole jury cost
+**$0.10 across two full review rounds** of a **$3.45** run — under 3% of it. And
+if cost really is the binding constraint, the lever is free-tier providers, not
+one reviewer: two judges on free Groq and Gemini models cost nothing.
+
+The diff isn't rationed to save money, either. The budget is derived from what
+each seated juror's provider actually accepts in one request, so on Gemini,
+Anthropic or an agentic CLI the whole diff goes through. Only a genuinely tight
+endpoint (Groq's free tier caps a request at 22K characters) forces a cut, and
+then the cut lands on a line boundary and labels itself, so a juror never reads
+the tail as missing code.
+
+### The evidence that two beats one
 
 That isn't just intuition. [SE-Jury](https://arxiv.org/abs/2505.20854) (Zhou et
 al., 2025) measured how well automatic judges agree with human experts about
@@ -74,8 +113,9 @@ tested:
 <sub>Correlation with human correctness scores, ×100. Backbone GPT-4o-mini.</sub>
 
 Program repair is the row that matters, because fixing a bug in existing code is
-what a coding agent actually does: **76.2 against 43.5**. A single judge is
-barely better than guessing about whether a patch is really a fix.
+what a coding agent actually does: **76.2 against 43.5**. On exactly the task the
+agent spends its day on, the ensemble tracks human judgement close to twice as
+well as the single judge does.
 
 Two more findings from that paper shaped the design. Swapping the backbone from
 GPT-4o-mini to DeepSeek-Chat moved the ensemble's average 64.3 → 64.9, so the
@@ -85,25 +125,6 @@ obvious objection.
 
 All the numbers above are SE-Jury's, measured on SE-Jury. They're evidence for
 the architecture, not a benchmark of this repo.
-
-### It costs less than people assume
-
-Two judges is two calls, but of the cheapest stage you have. A juror reads one
-case file once — the diff, the requirement, and the repo knowledge around it —
-and answers in a few hundred tokens of JSON. It never writes code, never
-iterates, never re-reads the repository. Dev reads whole source files across up
-to four rounds and generates the entire change. You're doubling the smallest line
-on the invoice.
-
-If cost really is the binding constraint, the lever is free-tier providers, not
-one reviewer. Two judges on free Groq and Gemini models cost nothing.
-
-The diff isn't rationed, either. The budget is derived from what each seated
-juror's provider actually accepts in one request, so on Gemini, Anthropic or an
-agentic CLI the whole diff goes through. Only a genuinely tight endpoint (Groq's
-free tier caps a request at 22K characters) forces a cut, and then the cut lands
-on a line boundary and labels itself, so a juror never reads the tail as missing
-code.
 
 ### The two seats
 
