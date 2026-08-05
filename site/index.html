@@ -1,0 +1,610 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CodeJury — a jury of agents for your codebase</title>
+<meta name="description" content="A terminal coding agent whose reviewer is a jury, not a judge. Two models review every change from different briefs, blind to each other, and it ships only if both approve.">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<meta property="og:type" content="website">
+<meta property="og:title" content="CodeJury — a jury of agents for your codebase">
+<meta property="og:description" content="A terminal coding agent whose reviewer is a jury, not a judge. Two models, different briefs, blind to each other. It ships only if both approve.">
+<meta property="og:url" content="https://krishagarwal314.github.io/CodeJury/">
+<meta property="og:image" content="https://krishagarwal314.github.io/CodeJury/assets/og.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<a class="skip" href="#main">Skip to content</a>
+
+<div class="page">
+
+<aside class="rail" aria-label="Sections">
+  <p class="rail-head"><span class="scales" aria-hidden="true">&#x2696;</span> codejury</p>
+  <nav>
+    <ol>
+      <li><a href="#why"><i>01</i> Why two reviewers</a></li>
+      <li><a href="#stages"><i>02</i> Six stages, any model</a></li>
+      <li><a href="#graph"><i>03</i> It looks changes up</a></li>
+      <li><a href="#start"><i>04</i> Getting started</a></li>
+      <li><a href="#how"><i>05</i> How it works</a></li>
+      <li><a href="#colophon"><i>06</i> Colophon</a></li>
+    </ol>
+  </nav>
+  <div class="rail-foot">
+    <button type="button" class="js-theme" aria-pressed="false"><kbd>t</kbd> light/dark</button>
+    <a href="https://github.com/krishagarwal314/CodeJury"><kbd>g</kbd> github</a>
+  </div>
+</aside>
+
+<main id="main">
+
+  <header class="hero">
+    <pre class="wordmark" role="img" aria-label="CodeJury"> ██████╗ ██████╗ ██████╗ ███████╗     ██╗██╗   ██╗██████╗ ██╗   ██╗
+██╔════╝██╔═══██╗██╔══██╗██╔════╝     ██║██║   ██║██╔══██╗╚██╗ ██╔╝
+██║     ██║   ██║██║  ██║█████╗       ██║██║   ██║██████╔╝ ╚████╔╝
+██║     ██║   ██║██║  ██║██╔══╝  ██   ██║██║   ██║██╔══██╗  ╚██╔╝
+╚██████╗╚██████╔╝██████╔╝███████╗╚█████╔╝╚██████╔╝██║  ██║   ██║
+ ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝ ╚════╝  ╚═════╝ ╚═╝  ╚═╝   ╚═╝</pre>
+    <p class="lockup" role="img" aria-label="CodeJury">&#x27E8; &#x2696; &#x27E9;&nbsp; C O D E J U R Y</p>
+    <p class="tagline">a jury of agents for your codebase</p>
+
+    <h1>Your reviewer is a&nbsp;jury,<br>not a judge.</h1>
+
+    <p class="lede">One LLM grading another LLM's code is close to a coin flip with a
+    confident voice. So the review stage here is two models instead of one. They read
+    the same change from different briefs, they never see each other's opinion, and the
+    change ships only if both approve. One&nbsp;&ldquo;no&rdquo; sends it back to the
+    developer with the reason attached.</p>
+
+    <div class="hero-act">
+      <div class="panel code">
+        <span class="panel-label">install</span>
+<pre>git clone https://github.com/krishagarwal314/CodeJury
+cd codejury
+./run.sh</pre>
+        <span class="panel-status">python 3.11+</span>
+      </div>
+      <div class="hero-side">
+        <a class="repo" href="https://github.com/krishagarwal314/CodeJury">
+          <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+          <span class="repo-name">krishagarwal314<span class="slash">/</span>CodeJury</span>
+          <span class="counts" data-counts hidden>
+            <span class="count"><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" focusable="false"><path d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.751.751 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25Z"/></svg><b data-stars>&mdash;</b><span class="sr-only"> stars</span></span>
+            <span class="count"><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" focusable="false"><path d="M5 5.372v.878c0 .414.336.75.75.75h4.5a.75.75 0 0 0 .75-.75v-.878a2.25 2.25 0 1 1 1.5 0v.878a2.25 2.25 0 0 1-2.25 2.25h-1.5v2.128a2.251 2.251 0 1 1-1.5 0V8.5h-1.5A2.25 2.25 0 0 1 3.5 6.25v-.878a2.25 2.25 0 1 1 1.5 0ZM5 3.25a.75.75 0 1 0-1.5 0 .75.75 0 0 0 1.5 0Zm6.75.75a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Zm-3 8.75a.75.75 0 1 0-1.5 0 .75.75 0 0 0 1.5 0Z"/></svg><b data-forks>&mdash;</b><span class="sr-only"> forks</span></span>
+          </span>
+        </a>
+        <p class="facts">
+          no API key required<br>
+          macOS &middot; Linux &middot; Windows<br>
+          MIT licensed &middot; Python 3.11+
+        </p>
+      </div>
+    </div>
+  </header>
+
+  <figure class="bleed shot hero-shot">
+    <div class="term">
+      <div class="term-bar" aria-hidden="true"><i></i><i></i><i></i><span>codejury</span></div>
+    <img src="assets/cli-session.gif" width="918" height="789" alt="A CodeJury session in the terminal: choosing the model for each stage, indexing go-gitea/gitea, scoping a request into a ticket, the Planner's verified plan, and a two-judge jury reaching a unanimous verdict.">
+    </div>
+    <figcaption>One session against <a href="https://github.com/go-gitea/gitea">go-gitea/gitea</a> &mdash; Go,
+    TypeScript and templates, 120,521 symbols indexed. Recorded from a delivery that really ran.
+    The model line-up and the two jury screens are re-rendered to the current default, which postdates
+    the recording. Everything below is a still from this recording.</figcaption>
+  </figure>
+
+  <!-- ─────────────────────────────────────────────────────────── 01 -->
+  <section id="why">
+    <h2><i class="num">01</i> Why two reviewers</h2>
+
+    <p>A single judge is fast, confident, and blind in the same places the author was
+    blind. Same training data, same idea of what looks right, same willingness to accept
+    a plausible diff that never wires the feature through. Ask it again and you get the
+    first answer back.</p>
+
+    <p>That isn't just intuition. <a href="https://arxiv.org/abs/2505.20854">SE-Jury</a>
+    (Zhou et al., 2025) measured how well automatic judges agree with human experts about
+    whether generated code is correct, and an ensemble beat every single judge they
+    tested.</p>
+
+    <figure class="bleed">
+      <table class="data">
+        <caption class="sr-only">Correlation with human correctness scores</caption>
+        <thead>
+          <tr><th scope="col">Judge</th><th scope="col" class="n">CoNaLa</th><th scope="col" class="n">Card2Code</th><th scope="col" class="n">APR-Assess</th><th scope="col" class="n">Summary</th><th scope="col" class="n">Avg</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>the LLM alone, plain prompt</td><td class="n">45.6</td><td class="n">70.4</td><td class="n">43.5</td><td class="n">33.9</td><td class="n">48.4</td></tr>
+          <tr><td>ICE-Score (best single judge)</td><td class="n">55.2</td><td class="n">66.5</td><td class="n">43.5</td><td class="n">33.1</td><td class="n">49.6</td></tr>
+          <tr class="win"><td>SE-Jury (ensemble)</td><td class="n">63.5</td><td class="n">80.3</td><td class="n">76.2</td><td class="n">37.3</td><td class="n">64.3</td></tr>
+        </tbody>
+      </table>
+      <figcaption>Correlation with human correctness scores, &times;100. Backbone GPT-4o-mini.</figcaption>
+    </figure>
+
+    <p>Program repair is the row that matters, because fixing a bug in existing code is
+    what a coding agent actually does: <strong>76.2 against 43.5</strong>. A single judge
+    is barely better than guessing about whether a patch is really a fix.</p>
+
+    <aside class="note">
+      <p>Two more findings from that paper shaped the design. Swapping the backbone from
+      GPT-4o-mini to DeepSeek-Chat moved the ensemble's average 64.3&nbsp;&rarr;&nbsp;64.9,
+      so the gain lives in the diversity rather than in any one vendor. And their whole
+      ensemble ran at about <strong>$0.10 per 100 samples</strong>, which is the answer to
+      the obvious objection.</p>
+      <p>All those numbers are SE-Jury's, measured on SE-Jury. They're evidence for the
+      architecture, not a benchmark of this repo.</p>
+    </aside>
+
+    <h3>The verdict is a rule, not a model call</h3>
+
+    <p>There is no foreperson. With two jurors there is nothing to arbitrate, and an
+    arbiter is just one more model that can talk a correct finding out of the verdict.</p>
+
+    <figure class="bleed shot">
+      <img src="assets/still-verdict.png" width="918" height="595" alt="The verdict screen: APPROVED, 2 of 2 jurors approving, decided by unanimity, with the delivery checks all ticked.">
+      <figcaption><span class="cmd">/review</span> &mdash; the verdict, the rule that produced it, and what the delivery actually did.</figcaption>
+    </figure>
+
+    <p>A dissent is never outvoted by the other juror's approval, because they reviewed
+    different halves &mdash; that approval is silence about a subject it was never asked to
+    look at. And if one juror abstains (a timeout, a rate limit, unparseable output) the
+    verdict is <code>INCONCLUSIVE</code>, not approved. Half a review is not a pass. The
+    juror is retried once first, since on a two-seat jury a lost seat costs the whole
+    delivery.</p>
+
+    <div class="bleed jurors">
+      <figure class="shot">
+        <img src="assets/still-juror-impl.png" width="918" height="330" alt="The Implementation and Behaviour juror, running codex gpt-5.1-codex, approving after checking the change against what the user asked for.">
+        <figcaption>Seat one takes the requirement, wiring, edge cases and tests.</figcaption>
+      </figure>
+      <figure class="shot">
+        <img src="assets/still-juror-sys.png" width="918" height="330" alt="The Systems and Fit juror, running deepseek-v3, approving after reviewing attack surface, repository fit and scale.">
+        <figcaption>Seat two takes security, fit with the repo's patterns, scope creep and scale.</figcaption>
+      </figure>
+    </div>
+
+    <h3>The two seats</h3>
+
+    <div class="seats" data-mode="pair">
+      <div class="switch" role="group" aria-label="Jury mode">
+        <button type="button" data-seat="pair" aria-pressed="true">pair</button>
+        <button type="button" data-seat="panel" aria-pressed="false">panel</button>
+      </div>
+
+      <dl class="seat-facts">
+        <div><dt>Seats</dt>
+          <dd data-when="pair">2, on different providers</dd>
+          <dd data-when="panel">up to 6 specialists (4 seated)</dd></div>
+        <div><dt>Briefs</dt>
+          <dd data-when="pair"><b>Implementation</b> takes the requirement, wiring, edge
+            cases and tests. <b>Systems</b> takes security, fit with the repo's patterns,
+            scope creep and scale. Each is told what the other owns.</dd>
+          <dd data-when="panel">one concern each: correctness, reliability, security,
+            architecture, performance, tests</dd></div>
+        <div><dt>Decision</dt>
+          <dd data-when="pair">unanimity, no foreperson</dd>
+          <dd data-when="panel">a foreperson merges and decides</dd></div>
+        <div><dt>Cost per round</dt>
+          <dd data-when="pair"><span class="fig">2</span> calls</dd>
+          <dd data-when="panel"><span class="fig">N+1</span> calls</dd></div>
+      </dl>
+      <p class="seat-foot" data-when="pair">The default. Two calls of the cheapest stage
+        you have.</p>
+      <p class="seat-foot" data-when="panel">Kept for when you want more perspectives.
+        Each mode keeps its own roster, so trying the panel and coming back finds your
+        pair as you left it.</p>
+    </div>
+
+    <div class="panel code bleed">
+      <span class="panel-label">/jury</span>
+<pre>  pair &middot; 2/2 seated &middot; all must approve
+
+  <span class="ok">&#x2713;</span>  Implementation &amp; Behaviour     <span class="dim">codex / gpt-5.1-codex</span>
+  <span class="ok">&#x2713;</span>  Systems &amp; Fit                  <span class="dim">custom / deepseek-v3</span>
+
+  <span class="dim">space seat/unseat   m model   a add judge   d remove
+  shift+&uarr;/&darr; reorder   R reset   q close</span></pre>
+      <span class="panel-status">2 seated</span>
+    </div>
+
+    <p><kbd>a</kbd> adds a seat with your own brief &mdash; house API conventions, a
+    compliance checklist, whatever your team argues about in review. A judge pointed at a
+    provider with no usable key is flagged as unable to run, because a juror that silently
+    isn't there looks exactly like a juror that found nothing.</p>
+
+    <h3>It costs less than people assume</h3>
+
+    <p>Two judges is two calls, but of the cheapest stage you have. A juror reads one case
+    file once &mdash; the diff, the requirement, and the repo knowledge around it &mdash;
+    and answers in a few hundred tokens of JSON. It never writes code, never iterates,
+    never re-reads the repository. Dev reads whole source files across up to four rounds
+    and generates the entire change. You're doubling the smallest line on the invoice.</p>
+
+    <p>If cost really is the binding constraint, the lever is free-tier providers, not one
+    reviewer. Two judges on free Groq and Gemini models cost nothing.</p>
+
+    <p>The diff isn't rationed, either. The budget is derived from what each seated juror's
+    provider actually accepts in one request, so on Gemini, Anthropic or an agentic CLI the
+    whole diff goes through. Only a genuinely tight endpoint (Groq's free tier caps a
+    request at 22K characters) forces a cut, and then the cut lands on a line boundary and
+    labels itself, so a juror never reads the tail as missing code.</p>
+  </section>
+
+  <!-- ─────────────────────────────────────────────────────────── 02 -->
+  <section id="stages">
+    <h2><i class="num">02</i> Six stages, any model on each</h2>
+
+    <p>CodeJury isn't one agent with a reviewer bolted on. It's six stages, and you pick
+    the provider and model for each one from the terminal. A skill pack lives inside one
+    vendor's agent and runs one vendor's model everywhere; this runs across them.</p>
+
+    <figure class="bleed">
+      <table class="data stages">
+        <thead><tr><th scope="col">Stage</th><th scope="col">What it does</th><th scope="col">Wants</th></tr></thead>
+        <tbody>
+          <tr><th scope="row">Knowledge</th><td>Builds and refreshes the repo's knowledge base. Once per repo, then incrementally.</td><td class="want">cheap, high volume</td></tr>
+          <tr><th scope="row">PM</th><td>Clarify-loop against your plain-English request, then drafts tickets. Owns the requirement, never the code.</td><td class="want">conversational, pushes back</td></tr>
+          <tr><th scope="row">Planner</th><td>Reads the repo through the code graph and decides how the change is made: ordered steps, blast radius, which tests to extend. Every symbol it names is checked against the graph and ripgrep.</td><td class="want">good reasoning, cheap &mdash; it's read-only</td></tr>
+          <tr><th scope="row">Dev</th><td>Implements the plan on an <code>agent/&lt;key&gt;</code> branch.</td><td class="want">your best coding model</td></tr>
+          <tr><th scope="row">QA</th><td>Runs the suite and reviews the result independently of Dev.</td><td class="want">reliable at reading output</td></tr>
+          <tr><th scope="row">Review</th><td>The jury.</td><td class="want">different family than Dev</td></tr>
+        </tbody>
+      </table>
+    </figure>
+
+    <figure class="bleed shot">
+      <img src="assets/still-models.png" width="902" height="314" alt="The /models screen: each of the six stages with its provider and model, and whether that backend is installed on this machine.">
+      <figcaption>Every stage, its model, and whether that backend is actually installed here.</figcaption>
+    </figure>
+
+    <div class="panel code bleed">
+      <span class="panel-label">repoint a stage</span>
+<pre><span class="cmd">/models</span>                                   <span class="dim"># who owns each stage, and is it installed here?</span>
+<span class="cmd">/model</span> dev anthropic claude-sonnet-5      <span class="dim"># repoint one stage</span>
+<span class="cmd">/model</span> planner gemini gemini-3.5-flash-lite
+<span class="cmd">/settings</span>                                 <span class="dim"># or drive it from the panel; `p` applies a
+                                          #   one-provider preset</span></pre>
+    </div>
+
+    <p><strong>You don't need an API key.</strong> The coding and planning stages run on
+    the agents you already pay for &mdash; Claude Code, Codex, Cursor, Aider, Gemini CLI
+    &mdash; driven headless through their own login, on your existing subscription.
+    <span class="cmd">/doctor</span> tells you which ones are usable on this machine and
+    how to fix the ones that aren't.</p>
+
+    <p>If you'd rather use keys, any work: the native Anthropic API, or any
+    OpenAI-compatible endpoint (OpenAI, Groq, Gemini, xAI, OpenRouter, Together, DeepSeek,
+    local Ollama). The defaults target Groq's free tier, so the whole pipeline can run for
+    nothing.</p>
+  </section>
+
+  <!-- ─────────────────────────────────────────────────────────── 03 -->
+  <section id="graph">
+    <h2><i class="num">03</i> It looks changes up instead of hunting for them</h2>
+
+    <p>A cold agent pays the localization tax on every task. Dropped into a repo it has
+    never seen, it greps, opens files, guesses, backtracks, and re-derives the same
+    architecture from scratch each time. On a large codebase that's expensive and it never
+    stops.</p>
+
+    <p>CodeJury pays it once. Ingesting a repo builds a knowledge base that persists on
+    disk and re-syncs as the repo moves:</p>
+
+    <dl class="defs">
+      <div>
+        <dt>A code graph</dt>
+        <dd>Definitions, call edges, imports and HTTP routes across 158 languages, giving
+        exact <code>file:line</code> lookups and call-graph impact analysis. Deterministic,
+        and free: no per-repo LLM or embedding spend.</dd>
+      </div>
+      <div>
+        <dt>Semantic search over the graph's nodes</dt>
+        <dd>Embedded locally (fastembed ONNX + embedded Qdrant, no Docker, no key) and
+        fused with BM25 through weighted Reciprocal Rank Fusion. So &ldquo;show how far
+        along a long-running job is&rdquo; finds <code>progress.py</code> despite sharing
+        no tokens with it: <strong>8/10 against 5/10</strong> top-5 recall versus
+        keyword-only on vocabulary-mismatch queries.</dd>
+      </div>
+      <div>
+        <dt>Delivery memory</dt>
+        <dd>After each scope ships, the KB records what it learned &mdash; files touched,
+        symbols added, gotchas, wiring &mdash; and that ranks into future scoping.</dd>
+      </div>
+    </dl>
+
+    <figure class="bleed shot">
+      <img src="assets/still-repos.png" width="902" height="262" alt="The repositories screen: seven indexed repositories with their knowledge-base state and symbol counts, gitea at 120,521 symbols.">
+      <figcaption>Indexed once, then kept in sync. gitea is 6,174 files of Go, TypeScript and Vue.</figcaption>
+    </figure>
+
+    <p>Nothing in the pipeline is Python-shaped. Symbol extraction, import parsing, the
+    edit-time syntax gate, what counts as a test file and which runner to use all live in
+    one registry that dispatches on file type. That gitea index is 120,521 graph nodes and
+    15,991 embedded symbols, and &ldquo;issue dependency search&rdquo; returns the Go model
+    while &ldquo;dependency dropdown candidates&rdquo; returns the TypeScript component,
+    from the same query.</p>
+
+    <aside class="note">
+      <p>Two rules keep that honest. An unrecognised language still gets its files indexed,
+      its edits applied, and its tests reported as <em>couldn't run</em> &mdash; never as
+      passing. And a manifest doesn't decide the ecosystem: gitea ships a
+      <code>pyproject.toml</code> whose entire contents pin three Python-packaged linters
+      for templates, YAML and CI workflows, against zero <code>.py</code> files and about
+      3,000 Go ones. The source has to actually be there, or QA runs the wrong suite.</p>
+    </aside>
+
+    <p>What the Planner does with all that is the point: it doesn't ask Dev to go find
+    anything. Every file and symbol in the plan is a pin that was checked against the graph
+    before Dev saw it.</p>
+
+    <figure class="bleed shot">
+      <img src="assets/still-plan.png" width="902" height="590" alt="The implementation plan: verified against the code graph, three ordered steps naming exact files and symbols, and the tests to extend.">
+      <figcaption><span class="cmd">/plan</span> &mdash; ordered steps, verified pins, and the tests to extend.</figcaption>
+    </figure>
+
+    <h3>Measured against plain Claude Code</h3>
+
+    <p>Identical plain-English request to both, on the two largest repos benchmarked:
+    Textualize/rich (~35.6k LOC) and Textualize/textual (~82.5k LOC).</p>
+
+    <figure class="bleed">
+      <table class="data bench">
+        <thead><tr><th scope="col">Repo</th><th scope="col">Task</th><th scope="col" class="n">CodeJury</th><th scope="col" class="n">Cold <code>claude -p</code></th><th scope="col" class="n">&Delta;</th></tr></thead>
+        <tbody>
+          <tr><td>rich</td><td>feature</td><td class="n">$0.333</td><td class="n dim">$0.449</td><td class="n win">&minus;26%</td></tr>
+          <tr><td>rich</td><td>cross-cutting bug</td><td class="n">$0.456</td><td class="n dim">$0.828</td><td class="n win">&minus;45%</td></tr>
+          <tr><td>textual</td><td>feature</td><td class="n">$0.380</td><td class="n dim">$0.590</td><td class="n win">&minus;36%</td></tr>
+          <tr><td>textual</td><td>extreme cross-cutting bug</td><td class="n">$1.705</td><td class="n dim">$6.830</td><td class="n win">&minus;75%</td></tr>
+          <tr><td>textual</td><td>medium bug</td><td class="n">$1.697</td><td class="n dim">$2.146</td><td class="n win">&minus;21%</td></tr>
+          <tr><td>textual</td><td>greppable bug</td><td class="n">$0.374</td><td class="n dim">$0.401</td><td class="n win">&minus;7%</td></tr>
+        </tbody>
+      </table>
+    </figure>
+
+    <p>The saving scales with how hard the change is to find. On the extreme case the cold
+    baseline spent $6.83 over 207 turns and 14.3M tokens chasing one cache-decorator bug.
+    Repo size isn't the driver; localizability is &mdash; a cross-cutting bug can cost a
+    cold agent 3.5&times; the tokens of a greppable one in the same repo.</p>
+
+    <p>It loses in places too. On a very cheap task (baseline ~$0.21) the fixed cost of the
+    gates is more than a cold run spends at all, and on the hardest bug the cheap win
+    shipped a narrower fix than the baseline did. Both are written up in the
+    <a href="https://github.com/krishagarwal314/CodeJury/blob/main/benchmarks/kb-vs-claude-code.md">full
+    report</a>, along with the earlier untuned runs that led here. It's the most
+    interesting thing in the repo; read it before the code.</p>
+
+    <aside class="note">
+      <p><b>The graph isn't mine.</b> The engine is
+      <a href="https://github.com/DeusData/codebase-memory-mcp"><code>codebase-memory-mcp</code></a>
+      (DeusData), a static binary that indexes a repo into a persistent code graph across
+      158 languages via bundled tree-sitter grammars. It indexes in seconds and needs no
+      daemon, no Docker and no key; CodeJury shells out to its CLI. Language coverage is the
+      kind of problem only solved by a project whose whole job it is. It's optional
+      &mdash; without it the KB falls back to a built-in symbol map plus ripgrep, which
+      works and just costs more tokens per task.</p>
+    </aside>
+  </section>
+
+  <!-- ─────────────────────────────────────────────────────────── 04 -->
+  <section id="start">
+    <h2><i class="num">04</i> Getting started</h2>
+
+    <p>Python 3.11+ and git are the only hard requirements, plus one way to power the
+    agents: an already-logged-in coding CLI, or any LLM API key. Optional but recommended:
+    <code>ripgrep</code>, the <code>codebase-memory-mcp</code> binary, and <code>gh</code>
+    for real PRs.</p>
+
+    <p><code>run.sh</code> creates the venv, installs everything, grabs the code-graph
+    binary if npm is around, copies <code>.env.example</code>&nbsp;&rarr;&nbsp;<code>.env</code>,
+    prints a preflight report and drops you into the shell. Prefer pip:
+    <code>pip install -e ".[semantic,treesitter]"</code> then <code>codejury</code>.</p>
+
+    <h3>Did I set this up right?</h3>
+
+    <div class="panel code bleed">
+      <span class="panel-label">codejury doctor</span>
+<pre>  <span class="gold">Environment</span>
+    <span class="ok">&#x2713;</span>  python           3.12.3
+    <span class="ok">&#x2713;</span>  git              git version 2.43.0
+    <span class="ok">&#x2713;</span>  ripgrep          ripgrep 15.2.0
+
+  <span class="gold">Knowledge base</span>
+    <span class="ok">&#x2713;</span>  code graph (codebase-memory-mcp)      codebase-memory-mcp 0.9.0
+    <span class="ok">&#x2713;</span>  semantic search (fastembed + qdrant)  installed
+
+  <span class="gold">Coding CLIs detected</span>
+    <span class="ok">&#x2713;</span>  claude-code  2.1.220 (Claude Code)
+    <span class="ok">&#x2713;</span>  codex        codex-cli 0.145.0
+    <span class="err">&#x2717;</span>  cursor       <span class="dim">'cursor-agent' not found on PATH</span>
+      <span class="dim">&bull; cursor: Install the Cursor CLI (cursor-agent), then run `cursor-agent
+      login` &mdash; or set a Cursor API key on the Providers tab.</span>
+
+  <span class="ok">&#x2713;</span> Ready to run.  <span class="dim">2 optional component(s) degraded &mdash; see above.</span></pre>
+      <span class="panel-status">ready</span>
+    </div>
+
+    <p>Every dependency is optional in a different way, and some degrade quality silently
+    rather than crashing, so <span class="cmd">doctor</span> reports all of them with a
+    repair hint and exits non-zero when something genuinely blocks a run.</p>
+
+    <h3>Your first delivery</h3>
+
+    <div class="panel code bleed">
+      <span class="panel-label">the whole loop</span>
+<pre><span class="cmd">/kb add</span> https://github.com/pallets/click     <span class="dim"># index a repo</span>
+add a --dry-run flag to the CLI runner       <span class="dim"># plain English; the PM agent scopes it</span>
+<span class="cmd">/tickets</span>                                     <span class="dim"># PM drafts engineering tickets</span>
+<span class="cmd">/approve all</span>                                 <span class="dim"># the human gate — nothing writes code before this</span>
+<span class="cmd">/run</span>                                         <span class="dim"># Planner → Dev → QA → jury → PR, streamed live</span>
+<span class="cmd">/review</span>                                      <span class="dim"># the verdict, every juror's findings, the diff</span></pre>
+    </div>
+
+    <figure class="bleed shot">
+      <img src="assets/still-tickets.png" width="901" height="167" alt="A drafted ticket awaiting approval: key G-101, its title, status and priority, with the hint that approval unlocks the pipeline.">
+      <figcaption>Nothing writes code before you approve the scope.</figcaption>
+    </figure>
+
+    <p>Demo mode is on by default, so the PR stage is a dry run. Turn it off (and
+    authenticate <code>gh</code>) only for a repo you own.</p>
+
+    <h3>Commands worth knowing</h3>
+
+    <figure class="bleed">
+      <table class="data cmds">
+        <tbody>
+          <tr><th scope="row"><span class="cmd">/doctor</span></th><td>What's installed, what's degraded, what blocks a run.</td></tr>
+          <tr><th scope="row"><span class="cmd">/kb add &lt;url&gt;</span></th><td>Index a repository, rendered live with the stage it's actually in. Ctrl-C detaches; the build keeps going.</td></tr>
+          <tr><th scope="row"><span class="cmd">/run</span></th><td>The pipeline as a stage timeline: per-stage model, elapsed time, cost, live tool-call count.</td></tr>
+          <tr><th scope="row"><span class="cmd">/review</span></th><td>The jury panel &mdash; the verdict and the rule that produced it, each juror's findings, the diff, the plan to read it against.</td></tr>
+          <tr><th scope="row"><span class="cmd">/jury</span> <span class="cmd">/models</span></th><td>The roster, and who owns each stage.</td></tr>
+          <tr><th scope="row"><span class="cmd">/settings</span></th><td>Providers and keys, per-stage models, loop bounds, delivery safety, Jira.</td></tr>
+          <tr><th scope="row"><span class="cmd">/costs</span></th><td>Tokens and dollars per ticket, scope and agent, read from each backend's own meter.</td></tr>
+          <tr><th scope="row"><span class="cmd">/show &lt;KEY&gt;</span></th><td>One ticket in full. Criteria the PM <em>assumed</em> rather than heard are flagged &mdash; the last cheap place to catch a drifted requirement.</td></tr>
+        </tbody>
+      </table>
+    </figure>
+
+    <figure class="bleed shot">
+      <img src="assets/still-costs.png" width="684" height="200" alt="The costs screen: two scopes with their ticket counts, token counts and dollar cost, totalling 10,111,701 tokens and $8.4783.">
+      <figcaption>Read from each backend's own meter, not estimated.</figcaption>
+    </figure>
+
+    <p>Everything the shell does is also a subcommand, dispatching through the same
+    registry, so the interactive and scripted paths can't drift.</p>
+
+    <div class="panel code bleed">
+      <span class="panel-label">scripted</span>
+<pre>codejury doctor --json
+codejury ingest https://github.com/pallets/click --wait
+codejury scope "add a --dry-run flag to the CLI runner"
+codejury approve all &amp;&amp; codejury run
+codejury review TASK-101 --json</pre>
+    </div>
+  </section>
+
+  <!-- ─────────────────────────────────────────────────────────── 05 -->
+  <section id="how">
+    <h2><i class="num">05</i> How it works</h2>
+
+    <div class="panel code bleed flow">
+      <span class="panel-label">the pipeline</span>
+<pre>ingest repo &rarr; knowledge base (code graph + embeddings + views)
+  &rarr; PM clarifies + drafts tickets &rarr; human approval (+ optional Jira)
+  &rarr; Planner: ordered steps, verified file:line pins, blast radius
+  &rarr; Dev implements on an agent/&lt;key&gt; branch
+  &rarr; QA runs tests + reviews                       <span class="dim">&#x2510;</span>
+  &rarr; Jury: 2 judges review in parallel, blind      <span class="dim">&#x251C;&mdash; revise loop &times;N on failure</span>
+  &rarr; Both approve, or it goes back with the reason <span class="dim">&#x2502;   (panel mode: N + foreperson)</span>
+  &rarr; PR opens                                      <span class="dim">&#x2518;</span></pre>
+    </div>
+
+    <p>The pipeline runs on a worker thread and records everything to SQLite, which is the
+    durable record a rejoined session reads back. It also publishes to an in-process event
+    bus, so the terminal follows a run as it happens instead of polling a database for
+    something happening in the thread next to it.</p>
+
+    <h3>A few things it refuses to do</h3>
+
+    <dl class="defs refusals">
+      <div>
+        <dt>No silent green</dt>
+        <dd>QA sees the diff and the test output, because &ldquo;no failures&rdquo; and
+        &ldquo;the suite never ran&rdquo; look identical otherwise. A suite that times out
+        or is missing is stamped <code>NO TEST SIGNAL</code>, and that reaches the board,
+        the PR body and the knowledge write-back.</dd>
+      </div>
+      <div>
+        <dt>No unreviewed change looking clean</dt>
+        <dd>An errored reviewer is <code>INCONCLUSIVE</code>, never a pass. A Dev that fails
+        stops the scope even if it committed something first, because a truncated edit set
+        and a finished one look the same in a diff.</dd>
+      </div>
+      <div>
+        <dt>No requirement drift</dt>
+        <dd>Every juror sees your verbatim request beside the PM's criteria. A jury judging
+        only the criteria can't notice the criteria were wrong, since every juror is
+        checking the same paraphrase.</dd>
+      </div>
+      <div>
+        <dt>Degrades instead of breaking</dt>
+        <dd>No graph binary &rarr; symbol map. No embeddings &rarr; TF-IDF. No ripgrep
+        &rarr; <code>git grep</code>. No Jira &rarr; a no-op. Runs offline on a free-tier
+        key.</dd>
+      </div>
+    </dl>
+
+    <p class="reads">Longer write-ups:
+      <a href="https://github.com/krishagarwal314/CodeJury/blob/main/docs/architecture.md">architecture</a> &middot;
+      <a href="https://github.com/krishagarwal314/CodeJury/blob/main/docs/knowledge-base.md">knowledge base</a> &middot;
+      <a href="https://github.com/krishagarwal314/CodeJury/blob/main/docs/configuration.md">configuration</a> &middot;
+      <a href="https://github.com/krishagarwal314/CodeJury/blob/main/benchmarks/kb-vs-claude-code.md">benchmark</a> &middot;
+      <a href="https://github.com/krishagarwal314/CodeJury/blob/main/benchmarks/retrieval-ablation.md">retrieval ablation</a>
+    </p>
+  </section>
+
+  <!-- ─────────────────────────────────────────────────────────── 06 -->
+  <section id="colophon">
+    <h2><i class="num">06</i> Colophon</h2>
+
+    <p>Roughly 90% of the code here was written by CodeJury itself. I'd rather say that up
+    front than have you work it out from the commit history, and honestly I don't understand
+    the instinct to hide it &mdash; a tool that builds itself is the most useful thing you
+    can know about it.</p>
+
+    <p>It wasn't vibe coded, though. Every change went through the same pipeline you see at
+    the top of this page: a scope I had to agree to before anything was written, a plan
+    pinned to symbols that were checked against the real code, a jury that could send it
+    back and sometimes did, and me reading the diff before it landed. The agent wrote most
+    of the lines. The decisions about what should exist, and what was allowed to ship, were
+    mine.</p>
+
+    <details class="cite">
+      <summary>Citation &mdash; SE-Jury (Zhou et al., 2025)</summary>
+<pre>@article{zhou2025sejury,
+  title  = {SE-Jury: An LLM-as-Ensemble-Judge Metric for Narrowing the Gap
+            with Human Evaluation in SE},
+  author = {Zhou, Xin and Kim, Kisub and Zhang, Ting and Weyssow, Martin and
+            Gomes, Lu{\'i}s F. and Yang, Guang and Liu, Kui and Xia, Xin and
+            Lo, David},
+  journal = {arXiv preprint arXiv:2505.20854},
+  year    = {2025},
+  url     = {https://arxiv.org/abs/2505.20854}
+}</pre>
+    </details>
+  </section>
+
+  <footer>
+    <div class="foot-grid">
+      <div>
+        <p class="foot-mark"><span class="scales" aria-hidden="true">&#x2696;</span> CodeJury</p>
+        <p>MIT licensed &middot; CLI first &middot; provider-agnostic<br>
+        code graph by <a href="https://github.com/DeusData/codebase-memory-mcp">codebase-memory-mcp</a></p>
+      </div>
+      <div class="contact">
+        <p class="contact-head">Built by Krish Agarwal</p>
+        <ul>
+          <li><a href="https://github.com/krishagarwal314">github.com/krishagarwal314</a></li>
+          <li><a href="https://www.linkedin.com/in/krish-agarwal-30a130224/">linkedin.com/in/krish-agarwal</a></li>
+          <li><a href="mailto:krishagarwal2009@gmail.com">krishagarwal2009@gmail.com</a></li>
+        </ul>
+      </div>
+    </div>
+    <p class="set">Set in IBM Plex Serif and IBM Plex Mono. No trackers and no analytics;
+    the only request off this page is the one that reads the star count.</p>
+  </footer>
+
+  <div class="statusbar">
+    <button type="button" class="js-theme" aria-pressed="false"><kbd>t</kbd> light/dark</button>
+    <a href="https://github.com/krishagarwal314/CodeJury"><kbd>g</kbd> github</a>
+    <span class="right">&#x2696; a jury of agents for your codebase</span>
+  </div>
+
+</main>
+</div>
+
+<script src="site.js" defer></script>
+</body>
+</html>
