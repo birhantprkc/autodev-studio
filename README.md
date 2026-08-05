@@ -38,6 +38,8 @@ of rediscovering them, which is where the review budget comes from.
 
 <div align="center">
 
+**[krishagarwal314.github.io/CodeJury](https://krishagarwal314.github.io/CodeJury/)**
+
 `pip install` · one command to run · no API key required · **macOS · Linux · Windows**
 
 [![CI](https://github.com/krishagarwal314/CodeJury/actions/workflows/ci.yml/badge.svg)](https://github.com/krishagarwal314/CodeJury/actions/workflows/ci.yml)
