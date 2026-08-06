@@ -656,7 +656,10 @@ footer .set { margin-top: 1.2rem; color: var(--rule); }
 /* ── Narrower ───────────────────────────────────────────────────────────── */
 
 @media (max-width: 1080px) {
-  .page { grid-template-columns: 1fr; }
+  /* minmax(0, 1fr), not 1fr: a bare `1fr` track refuses to shrink below the
+     min-content width of what's in it, so one wide table was widening the whole
+     document and clipping every paragraph on the page. */
+  .page { grid-template-columns: minmax(0, 1fr); }
   .rail {
     position: sticky; top: 0; height: auto;
     flex-direction: row; align-items: center; gap: 1.4rem;
@@ -679,6 +682,56 @@ footer .set { margin-top: 1.2rem; color: var(--rule); }
   body { font-size: 16px; }
   main { padding: 2.5rem 1.25rem 4rem; }
   .wordmark { display: none; }
+
+  /* The rail becomes two rows rather than one long scrolling strip: the brand
+     and the controls stay reachable on the first row, and only the section list
+     scrolls. As one row, `margin-left: auto` pushed light/dark and github off
+     the right edge of a phone, where nothing could reach them — the status bar
+     that carries the same two controls is hidden at this width. */
+  .rail { flex-wrap: wrap; overflow: visible; gap: 0.5rem 1rem; padding: 0.6rem 1.25rem; }
+  .rail-head { order: 1; }
+  .rail-foot { order: 2; margin: 0 0 0 auto; }
+  .rail nav { order: 3; flex-basis: 100%; overflow-x: auto; }
+  .rail nav ol { gap: 1.1rem; padding-bottom: 0.15rem; }
+
+  /* Wide evidence scrolls inside its own box instead of widening the page.
+     Terminal stills keep their natural size and pan — shrunk to 350px the text
+     in them is unreadable, which makes them decoration rather than evidence. */
+  .scroll { overflow-x: auto; }
+  .scroll table.data { min-width: 26rem; }
+  .shot { overflow-x: auto; }
+  .shot img { width: auto; max-width: none; }
+  .shot figcaption { position: sticky; left: 0; }
+  /* A screenshot cut off at the right edge reads as broken unless you are told
+     it moves. The hero recording is not clipped, so it says nothing. */
+  .shot:not(.hero-shot) figcaption::after {
+    content: " \2194 swipe";
+    color: var(--gold-ink);
+    white-space: nowrap;
+  }
+
+  /* The recording is the exception: it is the first thing on the page and it is
+     motion, not fine print, so it scales to fit rather than asking for a swipe. */
+  .hero-shot { overflow-x: visible; }
+  .hero-shot img { width: 100%; }
+
+  /* Stacked as blocks, not flex items. As a flex item the install panel kept
+     `min-width: auto` and sized itself to the longest line of the git clone
+     command — 451px inside a 350px column — and dragged the document with it. */
+  .hero-act { display: block; }
+  .hero-act .panel { flex: none; width: auto; min-width: 0; margin: 0 0 1.6rem; }
+  .hero-side { justify-items: stretch; }
+
+  /* The install commands wrap rather than scroll. Everywhere else a sideways
+     scroll preserves column alignment that wrapping would scramble, but the
+     first thing a reader is asked to copy should not be cut off mid-URL. */
+  .hero-act .panel pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+  h1 { font-size: clamp(2rem, 8.4vw, 2.6rem); }
+  h1 br { display: none; }
+  .panel { padding: 1.3rem 1rem 1.15rem; min-width: 0; }
+  .repo { flex-wrap: wrap; gap: 0.45rem 0.55rem; font-size: 0.78rem; }
+  .repo .counts { padding-left: 0.55rem; }
   .lockup {
     display: block; margin: 0;
     font: 600 clamp(1.05rem, 5.2vw, 1.5rem)/1.2 var(--mono);
